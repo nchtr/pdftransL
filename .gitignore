@@ -1,0 +1,23 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+
+# Secrets
+.env
+*.key
+
+# Logs
+*.log
+
+# Output files
+data/output/
+data/input/*.pdf
+
+# Hermes/local config
+.hermes/
+.cache/
+
+# System files
+.DS_Store
+Thumbs.db
