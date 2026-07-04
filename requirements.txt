@@ -1,0 +1,16 @@
+# Core (always required)
+requests>=2.31
+python-dotenv>=1.0
+
+# --- Optional extras (uncomment what you need) ---------------------
+# Scientific PDF parsing with formula->LaTeX recognition (recommended):
+# mineru[core]>=2.0
+# Lightweight parsing fallback (text + images only):
+# PyMuPDF>=1.24
+# Neural embeddings for translation memory / RAG:
+# sentence-transformers>=3.0
+# Django + Celery integration:
+# Django>=4.2
+# celery>=5.3
+# Tests:
+# pytest>=8.0

@@ -1,511 +1,155 @@
-# Hermes PDF Translator
+# pdftransl — движок перевода научных PDF
 
-Проект предназначен для автоматической обработки научной статьи в формате PDF:
+Автоматический перевод научных статей со сложной вёрсткой: формулы,
+таблицы, рисунки. PDF парсится в Markdown с LaTeX-формулами, картинки и
+графики экспортируются отдельно, текст переводится локальными или
+облачными LLM/VLM с самопроверкой, циклом исправлений и накоплением
+translation memory (RAG). Готов к встраиванию в Python-бэкенды
+(Django, FastAPI, Celery).
 
-1. **Агент-1** парсит PDF через API MinerU и сохраняет результат в Markdown.
-2. **Агент-2** считывает полученный `.md` файл и переводит текст с английского на русский.
-3. Hermes запускает агентов последовательно и организует передачу результата от первого агента ко второму.
-
----
-
-## Что нужно пользователю
-
-У пользователя должен быть PDF-файл научной статьи, который нужно перевести с английского на русский.
-
-На выходе пользователь получает:
-
-```text
-article.md              # распарсенный текст статьи
-translated_article.md   # перевод статьи на русский язык
+```
+PDF ──> парсинг (MinerU / PyMuPDF) ──> Markdown + LaTeX + картинки
+     ──> разбиение на блоки ──> маскирование формул/кода/ссылок
+     ──> RAG-контекст (память переводов + глоссарий)
+     ──> перевод LLM ──> валидаторы ──> цикл исправлений ──> LLM-ревью
+     ──> сборка Markdown + отчёт QA + обучение памяти переводов
 ```
 
----
+## Возможности
 
-## Структура проекта
+- **Парсинг** — плагинные бэкенды:
+  - `mineru_local` — локальный MinerU CLI (формулы → LaTeX, таблицы, вёрстка);
+  - `mineru_api` — облачный API MinerU (`MINERU_API_KEY`);
+  - `pymupdf` — лёгкий фолбэк (текст + экспорт встроенных картинок);
+  - `auto` — выбирает лучший доступный.
+- **Защита формул** — LaTeX (`$...$`, `$$...$$`, окружения, `\cite`/`\ref`),
+  код, картинки, URL и библиографические ссылки маскируются плейсхолдерами
+  `⟦PH42⟧` до перевода и побайтово восстанавливаются после.
+- **Провайдеры LLM** — один OpenAI-совместимый клиент покрывает OpenRouter,
+  OpenAI, DeepSeek и локальные серверы (Ollama, vLLM, LM Studio,
+  llama.cpp); отдельный клиент для Anthropic. VLM-описание рисунков.
+- **Самоконтроль** — детерминированные валидаторы (целостность
+  плейсхолдеров, форма таблиц, соотношение длин, доля непереведённого
+  текста, баланс LaTeX-разделителей) + автоматический цикл исправлений +
+  LLM-ревью проблемных сегментов. QA-отчёт в `report.json`.
+- **Обучение и RAG** — translation memory на SQLite: точные совпадения
+  переиспользуются без LLM, похожие сегменты подаются как few-shot
+  примеры; правки человека (`origin=human`) имеют приоритет; глоссарий
+  терминов принудительно подставляется в промпт; экспорт TM в JSONL
+  (датасет для дообучения).
+- **Интеграция в бэкенд** — `TranslationService` (submit / process /
+  status / result) + готовый пример Django-приложения с Celery
+  (`integrations/django_example/`).
 
-Примерная структура папок:
-
-```text
-project/
-│
-├── data/
-│   ├── input/
-│   │   └── article.pdf
-│   │
-│   └── output/
-│       └── final/
-│           ├── article.md
-│           └── translated_article.md
-│
-├── run_parser_agent.py
-├── run_translator_agent.py
-├── hermes_task.md
-├── .env
-└── README.md
-```
-
----
-
-## Подготовка к запуску
-
-### 1. Установить зависимости
-
-Перед запуском нужно установить зависимости проекта:
+## Установка
 
 ```bash
-pip install -r requirements.txt
+pip install -e .                  # ядро (requests + dotenv)
+pip install -e ".[mineru]"        # + качественный парсинг научных PDF
+pip install -e ".[pymupdf]"       # + лёгкий фолбэк-парсер
+pip install -e ".[rag]"           # + нейросетевые эмбеддинги для TM
+pip install -e ".[dev]"           # + pytest
 ```
 
-Если используется виртуальное окружение:
+Ключи — в `.env` (см. `.env.example`) или переменных окружения:
+
+```env
+MINERU_API_KEY=...        # облачный парсинг MinerU
+OPENROUTER_API_KEY=...    # или OPENAI_API_KEY / ANTHROPIC_API_KEY / DEEPSEEK_API_KEY
+```
+
+Для локальных моделей ключи не нужны — достаточно запущенного
+Ollama/vLLM/LM Studio.
+
+## Быстрый старт (CLI)
 
 ```bash
-python -m venv venv
-venv\Scripts\activate
-pip install -r requirements.txt
+# перевод PDF целиком (облако)
+pdftransl translate data/input/article.pdf --provider openrouter --model "openrouter/auto"
+
+# полностью локально: Ollama + локальный MinerU
+pdftransl translate article.pdf --provider ollama --model qwen2.5:14b --backend mineru_local
+
+# перевести уже распарсенный markdown
+pdftransl translate-md article.md -o article.ru.md
+
+# только парсинг (markdown + экспорт картинок)
+pdftransl parse article.pdf -o data/output
+
+# + VLM-описания рисунков (figures.json)
+pdftransl translate article.pdf --describe-figures
+
+# глоссарий и память переводов
+pdftransl glossary add "attention head" "головка внимания"
+pdftransl glossary import terms.csv
+pdftransl tm stats
+pdftransl tm export dataset.jsonl
 ```
 
----
+## Использование из Python
 
-### 2. Настроить API-ключи
+```python
+from pdftransl import PipelineConfig, TranslationService
 
-В корне проекта должен быть файл `.env`.
+config = PipelineConfig.from_env(provider="ollama", model="qwen2.5:14b")
+service = TranslationService(config)
 
-Пример содержимого:
+# синхронно
+result = service.translate("data/input/article.pdf")
+print(result.output_markdown_path, result.report["segments_failed"])
 
-```env
-MINERU_API_KEY=ваш_ключ_mineru
-OPENROUTER_API_KEY=ваш_ключ_openrouter
+# асинхронно (веб-запрос -> воркер)
+job_id = service.submit("data/input/article.pdf")   # из view
+service.process(job_id)                              # из Celery-таски
+print(service.status(job_id))                        # из polling-эндпоинта
+
+# обучение: правка человека попадает в память переводов
+service.add_correction(
+    "The attention head computes...",
+    "Головка внимания вычисляет...",
+)
 ```
 
-`MINERU_API_KEY` нужен для парсинга PDF через MinerU.  
-`OPENROUTER_API_KEY` нужен для перевода текста через языковую модель.
+Интеграция с Django — готовое приложение и инструкция:
+[`integrations/django_example/`](integrations/django_example/README.md).
 
----
+## Результат работы
 
-### 3. Добавить PDF-файл
-
-Пользователь должен поместить PDF-файл статьи в папку:
-
-```text
-data/input/
+```
+data/output/<имя_статьи>/
+├── <имя_статьи>.md        # распарсенный оригинал
+├── <имя_статьи>.ru.md     # перевод
+├── assets/                # экспортированные картинки и графики
+├── figures.json           # VLM-описания рисунков (опционально)
+├── report.json            # QA-отчёт: проблемные сегменты, статистика
+└── parse/                 # промежуточные файлы парсера
 ```
 
-Файл должен называться:
+## Конфигурация
 
-```text
-article.pdf
+Все параметры — в `PipelineConfig` (`pdftransl/config.py`); основные
+переменные окружения:
+
+| Переменная | Значение |
+|---|---|
+| `PDFTRANSL_PROVIDER` | `openrouter` \| `openai` \| `anthropic` \| `deepseek` \| `ollama` \| `vllm` \| `lmstudio` \| `llamacpp` |
+| `PDFTRANSL_MODEL` | имя модели у провайдера |
+| `PDFTRANSL_BASE_URL` | свой OpenAI-совместимый endpoint |
+| `PDFTRANSL_PARSER` | `auto` \| `mineru_local` \| `mineru_api` \| `pymupdf` |
+| `PDFTRANSL_SOURCE_LANG` / `PDFTRANSL_TARGET_LANG` | языковая пара (по умолчанию `en` → `ru`) |
+| `PDFTRANSL_USE_RAG` / `PDFTRANSL_REVIEW` / `PDFTRANSL_LEARN` | `true`/`false` |
+| `PDFTRANSL_DB` | путь к SQLite (jobs + TM + глоссарий) |
+
+## Документация
+
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — устройство пайплайна и модулей.
+- [`docs/IMPROVEMENTS.md`](docs/IMPROVEMENTS.md) — план улучшений / роадмап.
+- [`docs/LEGACY_HERMES.md`](docs/LEGACY_HERMES.md) — прежняя инструкция
+  Hermes-демо (скрипты `run_parser_agent.py` / `run_translator_agent.py`
+  по-прежнему работают и используют новый движок).
+
+## Тесты
+
+```bash
+python -m pytest tests/ -q    # офлайн, без сети и API-ключей
 ```
-
-Итоговый путь:
-
-```text
-data/input/article.pdf
-```
-
-Если файл называется иначе, его нужно переименовать или изменить путь в настройках запуска.
-
----
-
-## Работа в PowerShell
-
-Ниже приведён пример запуска проекта на Windows через PowerShell.
-
-### 1. Открыть папку проекта
-
-Откройте PowerShell и перейдите в папку проекта:
-
-```powershell
-cd C:\Project
-```
-
-Проверьте, что нужные файлы находятся в проекте:
-
-```powershell
-dir
-dir .\data\input
-```
-
-В папке `data\input` должен лежать файл:
-
-```text
-article.pdf
-```
-
----
-
-### 2. Активировать виртуальное окружение
-
-Если виртуальное окружение уже создано:
-
-```powershell
-.\venv\Scripts\Activate.ps1
-```
-
-Если PowerShell запрещает запуск скриптов, выполните команду:
-
-```powershell
-Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
-```
-
-После этого снова активируйте окружение:
-
-```powershell
-.\venv\Scripts\Activate.ps1
-```
-
-Если виртуального окружения ещё нет:
-
-```powershell
-python -m venv venv
-.\venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-```
-
----
-
-### 3. Проверить файл `.env`
-
-Откройте файл `.env`:
-
-```powershell
-notepad .env
-```
-
-В нём должны быть API-ключи:
-
-```env
-MINERU_API_KEY=ваш_ключ_mineru
-OPENROUTER_API_KEY=ваш_ключ_openrouter
-```
-
-Если файла `.env` нет, создайте его:
-
-```powershell
-notepad .env
-```
-
-Затем вставьте ключи и сохраните файл.
-
----
-
-## Настройка Hermes в PowerShell
-
-### 1. Проверить, что Hermes установлен
-
-```powershell
-hermes --help
-```
-
-Если команда открывает справку Hermes, значит Hermes доступен.
-
----
-
-### 2. Настроить модель
-
-Запустите настройку модели:
-
-```powershell
-hermes model
-```
-
-Далее выберите провайдера и модель.
-
-Для проекта можно использовать OpenRouter.  
-После выбора модели убедитесь, что в настройках указан рабочий API-ключ.
-
-Если Hermes требует первичную настройку, выполните:
-
-```powershell
-hermes setup
-```
-
----
-
-### 3. Проверить переменные окружения Hermes
-
-Если Hermes использует отдельный файл настроек, проверьте файл:
-
-```powershell
-notepad $env:USERPROFILE\.hermes\.env
-```
-
-Там должен быть ключ:
-
-```env
-OPENROUTER_API_KEY=ваш_ключ_openrouter
-```
-
-Если ключа нет, добавьте его вручную, сохраните файл и перезапустите PowerShell.
-
----
-
-## Запуск проекта через Hermes
-
-### Вариант 1. Запуск задачи Hermes из папки проекта
-
-Перейдите в папку проекта:
-
-```powershell
-cd C:\Project
-```
-
-Запустите Hermes task:
-
-```powershell
-hermes task
-```
-
-Hermes должен выполнить цепочку:
-
-```text
-PDF → Agent-1 Parser → article.md → Agent-2 Translator → translated_article.md
-```
-
----
-
-### Вариант 2. Запуск Hermes в интерактивном режиме
-
-Перейдите в папку проекта:
-
-```powershell
-cd C:\Project
-```
-
-Запустите Hermes:
-
-```powershell
-hermes
-```
-
-После запуска вставьте промт:
-
-```text
-Прочитай файл hermes_task.md в корне текущего проекта и выполни задачу из него.
-
-Не придумывай новую архитектуру проекта. Нужно запустить оркестрацию двух субагентов:
-
-1. Agent-1 должен взять файл data/input/article.pdf, подключиться к MinerU через API, распарсить PDF и сохранить результат в data/output/final/article.md.
-
-2. Agent-2 должен прочитать data/output/final/article.md, перевести текст с английского на русский язык, сохранить структуру Markdown, формулы, таблицы и заголовки, а итоговый результат сохранить в data/output/final/translated_article.md.
-
-После выполнения кратко напиши:
-- был ли найден исходный PDF;
-- был ли создан article.md;
-- был ли создан translated_article.md;
-- какие ошибки возникли, если они были.
-```
-
----
-
-## Какой файл должен прочитать Hermes
-
-В корне проекта должен быть файл:
-
-```text
-hermes_task.md
-```
-
-Он нужен для того, чтобы Hermes получил готовое техническое задание и не приходилось каждый раз писать длинный промт вручную.
-
-Пример команды для открытия файла:
-
-```powershell
-notepad .\hermes_task.md
-```
-
-Если файла нет, создайте его в корне проекта.
-
-Пример содержимого `hermes_task.md`:
-
-```markdown
-# Hermes Task
-
-Нужно средствами Hermes создать двух субагентов и запустить их оркестрацию для решения задачи парсинга PDF научной статьи и последующего перевода с английского на русский.
-
-## Agent-1: Parser Agent
-
-Задача:
-- взять PDF-файл из `data/input/article.pdf`;
-- подключиться через API MinerU;
-- распарсить PDF;
-- сохранить результат в Markdown по пути `data/output/final/article.md`.
-
-## Agent-2: Translator Agent
-
-Задача:
-- прочитать файл `data/output/final/article.md`;
-- перевести текст с английского на русский;
-- сохранить Markdown-разметку, заголовки, таблицы и LaTeX-формулы;
-- сохранить итоговый перевод по пути `data/output/final/translated_article.md`.
-
-## Оркестрация
-
-Hermes должен запустить агентов последовательно:
-
-`PDF → Parser Agent → article.md → Translator Agent → translated_article.md`
-
-Если файл `article.md` уже существует, можно пропустить парсинг и сразу запустить переводчик.
-Если файл `translated_article.md` уже существует, нужно сообщить, что перевод уже был создан.
-```
-
----
-
-## Ручной запуск агентов
-
-Если нужно запустить агентов отдельно, можно выполнить команды по очереди.
-
-Сначала запустить парсер:
-
-```powershell
-python run_parser_agent.py
-```
-
-После успешного парсинга должен появиться файл:
-
-```text
-data/output/final/article.md
-```
-
-Затем запустить переводчик:
-
-```powershell
-python run_translator_agent.py
-```
-
-После завершения перевода должен появиться файл:
-
-```text
-data/output/final/translated_article.md
-```
-
----
-
-## Где смотреть результат
-
-После завершения работы итоговый перевод находится здесь:
-
-```text
-data/output/final/translated_article.md
-```
-
-Этот файл можно открыть в любом редакторе Markdown, например:
-
-- Obsidian;
-- Visual Studio Code;
-- Typora;
-- обычный текстовый редактор.
-
----
-
-## Как понять, что всё прошло успешно
-
-Успешный результат:
-
-```text
-data/output/final/article.md
-data/output/final/translated_article.md
-```
-
-Если оба файла появились, значит:
-
-1. PDF был успешно распознан и преобразован в Markdown.
-2. Markdown был передан переводчику.
-3. Перевод был сохранён в итоговый файл.
-
----
-
-## Возможные ошибки
-
-### Ошибка: не найден PDF-файл
-
-Проверьте, что файл находится по пути:
-
-```text
-data/input/article.pdf
-```
-
----
-
-### Ошибка: не найден API-ключ
-
-Проверьте файл `.env`.
-
-В нём должны быть указаны ключи:
-
-```env
-MINERU_API_KEY=...
-OPENROUTER_API_KEY=...
-```
-
-Также проверьте файл Hermes:
-
-```powershell
-notepad $env:USERPROFILE\.hermes\.env
-```
-
----
-
-### Ошибка 401 / User not found
-
-Возможные причины:
-
-1. Неверный API-ключ.
-2. Hermes использует не тот ключ.
-3. Ключ указан не в том `.env` файле.
-4. Выбранный провайдер не совпадает с ключом.
-
-Что сделать:
-
-```powershell
-hermes model
-```
-
-Затем заново выбрать провайдера и модель.
-
----
-
-### Ошибка 429 / Rate limit
-
-Это означает, что закончился лимит запросов к модели или API.
-
-Что можно сделать:
-
-1. Подождать восстановления лимита.
-2. Выбрать другую модель.
-3. Использовать платный API-ключ.
-4. Уменьшить размер обрабатываемого текста.
-
----
-
-### Перевод создался не полностью
-
-Возможная причина — лимит модели или ограничение по количеству запросов.
-
-Решение:
-
-1. Проверить логи.
-2. Повторить запуск переводчика.
-3. Использовать модель с большим лимитом.
-4. Убедиться, что файл `article.md` создан полностью.
-
----
-
-## Краткая логика работы
-
-```text
-1. Пользователь добавляет PDF-файл.
-2. Агент-парсер отправляет PDF в MinerU.
-3. MinerU возвращает распознанный текст.
-4. Текст сохраняется в article.md.
-5. Агент-переводчик читает article.md.
-6. Текст делится на части.
-7. Каждая часть переводится на русский язык.
-8. Итоговый перевод сохраняется в translated_article.md.
-```
-
----
-
-## Итог
-
-Проект позволяет пользователю загрузить PDF научной статьи и получить её перевод на русский язык в формате Markdown.  
-Основная цель проекта — показать взаимодействие двух субагентов Hermes: один отвечает за парсинг PDF, второй — за перевод результата.

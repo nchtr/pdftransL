@@ -1,47 +1,28 @@
-import subprocess
-import logging
-from pathlib import Path
+"""Legacy Hermes Agent-1 wrapper.
 
+Kept for backward compatibility with run_parser_agent.py / Hermes
+orchestration. Delegates to the pdftransl parsing backends (local
+MinerU -> MinerU API -> PyMuPDF fallback).
+"""
+
+import logging
+
+from pdftransl.config import PipelineConfig
+from pdftransl.parsing.base import parse_pdf
 
 logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 
 class ParserAgent:
 
     def run(self, pdf_path, output_dir):
-
         try:
-
             logging.info("Parsing started")
-
-            command = [
-                "mineru",
-                "-p",
-                pdf_path,
-                "-o",
-                output_dir,
-                "-b",
-                "pipeline"
-            ]
-            subprocess.run(command, check=True)
+            parsed = parse_pdf(pdf_path, output_dir, PipelineConfig.from_env())
             logging.info("Parsing finished")
-            output_path = Path(output_dir)
-            md_files = list(output_path.rglob("*.md"))
-
-            if not md_files:
-                raise FileNotFoundError("Markdown file not found")
-
-            markdown_path = md_files[0]
-            logging.info(f"Markdown found: {markdown_path}")
-            return markdown_path
-
-        except subprocess.CalledProcessError as e:
-
-            logging.error(f"Parsing error: {e}")
-
+            logging.info(f"Markdown found: {parsed.markdown_path}")
+            return parsed.markdown_path
         except Exception as e:
-
-            logging.error(f"Unexpected error: {e}")
-
-
-            
+            logging.error(f"Parsing error: {e}")
+            return None

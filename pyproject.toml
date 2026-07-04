@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pdftransl"
+version = "0.1.0"
+description = "Scientific PDF translation engine: parsing (LaTeX formulas, layout, figures), LLM/VLM translation with self-verification, translation memory / RAG, backend-ready service layer"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "requests>=2.31",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+# High-quality scientific PDF parsing (formulas -> LaTeX). Heavy: downloads models.
+mineru = ["mineru[core]>=2.0"]
+# Lightweight parsing fallback (text + embedded images, no formula recognition).
+pymupdf = ["PyMuPDF>=1.24"]
+# Neural embeddings for the translation memory (otherwise a hashing fallback is used).
+rag = ["sentence-transformers>=3.0"]
+# Django integration example.
+django = ["Django>=4.2", "celery>=5.3"]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+pdftransl = "pdftransl.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["pdftransl*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
