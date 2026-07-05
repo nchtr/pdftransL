@@ -37,6 +37,19 @@ def _add_common(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--describe-figures", action="store_true",
                         help="describe exported figures with a VLM")
     parser.add_argument("--db", default=None, help="path to the sqlite database")
+    parser.add_argument("--formats", default=None,
+                        help="export formats, comma-separated: html,docx,pdf")
+    parser.add_argument("--bilingual", action="store_true",
+                        help="also produce an alternating source/translation document")
+    parser.add_argument("--workers", type=int, default=None,
+                        help="parallel segment translations (default 4)")
+    parser.add_argument("--fallback", default=None,
+                        help="fallback providers, comma-separated (tried on failure)")
+    parser.add_argument("--no-cache", action="store_true", help="disable the parse cache")
+    parser.add_argument("--backtranslation", action="store_true",
+                        help="enable the back-translation semantic check")
+    parser.add_argument("--domain", default=None,
+                        help="translation-memory domain tag (e.g. physics, ml)")
 
 
 def _config_from_args(args: argparse.Namespace) -> PipelineConfig:
@@ -63,6 +76,20 @@ def _config_from_args(args: argparse.Namespace) -> PipelineConfig:
         overrides["describe_figures"] = True
     if args.db:
         overrides["db_path"] = args.db
+    if args.formats:
+        overrides["export_formats"] = [f.strip() for f in args.formats.split(",") if f.strip()]
+    if args.bilingual:
+        overrides["bilingual"] = True
+    if args.workers:
+        overrides["max_workers"] = args.workers
+    if args.fallback:
+        overrides["fallback_providers"] = [p.strip() for p in args.fallback.split(",") if p.strip()]
+    if args.no_cache:
+        overrides["parse_cache"] = False
+    if args.backtranslation:
+        overrides["backtranslation_check"] = True
+    if args.domain:
+        overrides["tm_domain"] = args.domain
     return PipelineConfig.from_env(**overrides)
 
 
@@ -112,6 +139,9 @@ def main(argv: list[str] | None = None) -> int:
 
     p_jobs = sub.add_parser("jobs", help="list translation jobs")
     _add_common(p_jobs)
+
+    p_eng = sub.add_parser("engines", help="show available export engines")
+    _add_common(p_eng)
 
     args = parser.parse_args(argv)
     config = _config_from_args(args)
@@ -180,6 +210,12 @@ def main(argv: list[str] | None = None) -> int:
         for job in service.list_jobs():
             print(f"{job['id']}\t{job['status']}\t{job.get('stage') or '-'}\t"
                   f"{job.get('progress') or 0:.0%}\t{job.get('pdf_path')}")
+        return 0
+
+    if args.command == "engines":
+        from pdftransl.export.exporter import available_engines
+
+        print(json.dumps(available_engines(), indent=2))
         return 0
 
     return 1

@@ -59,6 +59,8 @@ def test_translate_markdown_end_to_end(tmp_path):
         output_dir=str(tmp_path / "out"),
         review=False,
         embedder="hashing",
+        doc_summary=False,
+        auto_glossary=False,
     )
     client = FakeLLMClient(transform=fake_translate)
     pipeline = TranslationPipeline(cfg, client=client)
@@ -83,6 +85,8 @@ def test_tm_reuse_on_second_run(tmp_path):
         output_dir=str(tmp_path / "out"),
         review=False,
         embedder="hashing",
+        doc_summary=False,
+        auto_glossary=False,
     )
     client1 = FakeLLMClient(transform=fake_translate)
     p1 = TranslationPipeline(cfg, client=client1)

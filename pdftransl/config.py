@@ -157,9 +157,19 @@ class PipelineConfig:
     api_key: Optional[str] = None
     temperature: float = 0.15
     max_output_tokens: Optional[int] = None
+    # Fallback chain: providers tried in order when the primary fails
+    # (e.g. ["ollama", "openrouter"] = local first, cloud on failure).
+    fallback_providers: list[str] = field(default_factory=list)
 
-    # Chunking
+    # Chunking / throughput
     chunk_char_budget: int = 4000       # max chars of masked text per request
+    max_workers: int = 4                # parallel segment translations (1 = sequential)
+
+    # Document-level translation context
+    doc_summary: bool = True            # LLM summary of the paper in the system prompt
+    auto_glossary: bool = True          # LLM-extracted per-document term glossary
+    source_context_chars: int = 400     # tail of the previous source segment in the prompt
+    skip_references: bool = True        # do not translate the References/Bibliography section
 
     # Quality control
     review: bool = True                 # LLM self-review of flagged segments
@@ -168,10 +178,15 @@ class PipelineConfig:
     max_length_ratio: float = 3.5
     max_residual_source_ratio: float = 0.35  # tolerated share of source-script words
 
+    # Extra quality checks
+    backtranslation_check: bool = False  # embed(source) vs embed(back-translation)
+    backtranslation_min_similarity: float = 0.5
+
     # RAG / translation memory
     use_rag: bool = True
     tm_top_k: int = 3
     tm_min_similarity: float = 0.82
+    tm_domain: Optional[str] = None     # restrict TM search/learn to a domain
     learn: bool = True                  # store good translations back into TM
     embedder: str = "auto"              # auto | hashing | sentence-transformers | api
     embedding_model: Optional[str] = None
@@ -184,9 +199,15 @@ class PipelineConfig:
     vision_model: Optional[str] = None
     max_figures: int = 30
 
+    # Output
+    bilingual: bool = False             # alternate source/translation paragraphs
+    export_formats: list[str] = field(default_factory=lambda: ["html"])
+    # any of: "html", "docx", "pdf" (md is always produced)
+
     # Storage
     db_path: str = "data/pdftransl.db"
     output_dir: str = "data/output"
+    parse_cache: bool = True            # cache parse results by PDF content hash
 
     extra: dict[str, Any] = field(default_factory=dict)
 
@@ -213,9 +234,24 @@ class PipelineConfig:
             ("PDFTRANSL_USE_RAG", "use_rag"),
             ("PDFTRANSL_LEARN", "learn"),
             ("PDFTRANSL_DESCRIBE_FIGURES", "describe_figures"),
+            ("PDFTRANSL_DOC_SUMMARY", "doc_summary"),
+            ("PDFTRANSL_AUTO_GLOSSARY", "auto_glossary"),
+            ("PDFTRANSL_SKIP_REFERENCES", "skip_references"),
+            ("PDFTRANSL_BILINGUAL", "bilingual"),
+            ("PDFTRANSL_PARSE_CACHE", "parse_cache"),
         ):
             if env.get(flag) is not None:
                 kwargs[attr] = env[flag].strip().lower() in ("1", "true", "yes", "on")
+        if env.get("PDFTRANSL_MAX_WORKERS"):
+            kwargs["max_workers"] = int(env["PDFTRANSL_MAX_WORKERS"])
+        if env.get("PDFTRANSL_FALLBACK_PROVIDERS"):
+            kwargs["fallback_providers"] = [
+                p.strip() for p in env["PDFTRANSL_FALLBACK_PROVIDERS"].split(",") if p.strip()
+            ]
+        if env.get("PDFTRANSL_EXPORT_FORMATS"):
+            kwargs["export_formats"] = [
+                f.strip() for f in env["PDFTRANSL_EXPORT_FORMATS"].split(",") if f.strip()
+            ]
         kwargs.update(overrides)
         return cls(**kwargs)
 

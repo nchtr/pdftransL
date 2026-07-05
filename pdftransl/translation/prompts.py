@@ -43,6 +43,16 @@ TERMINOLOGY (use exactly these translations):
 {terms}
 """
 
+SUMMARY_TEMPLATE = """
+DOCUMENT CONTEXT (what this paper is about):
+{summary}
+"""
+
+SOURCE_CONTEXT_TEMPLATE = """
+PRECEDING TEXT (context only — do NOT translate or include it):
+…{context}
+"""
+
 EXAMPLES_TEMPLATE = """
 REFERENCE TRANSLATIONS from the translation memory (match their style \
 and terminology):
@@ -96,13 +106,19 @@ def build_translation_system(
     tgt: str,
     glossary_terms: list[dict[str, str]] | None = None,
     tm_examples: list[dict[str, str]] | None = None,
+    doc_summary: str | None = None,
 ) -> str:
     glossary = ""
     if glossary_terms:
-        lines = "\n".join(
-            f"- {t['term']} -> {t['translation']}" for t in glossary_terms
-        )
-        glossary = GLOSSARY_TEMPLATE.format(terms=lines)
+        # de-duplicate by term (document glossary + stored glossary)
+        seen: set[str] = set()
+        lines = []
+        for t in glossary_terms:
+            key = t["term"].lower()
+            if key not in seen:
+                seen.add(key)
+                lines.append(f"- {t['term']} -> {t['translation']}")
+        glossary = GLOSSARY_TEMPLATE.format(terms="\n".join(lines))
     examples = ""
     if tm_examples:
         parts = []
@@ -111,6 +127,18 @@ def build_translation_system(
             tgt_short = ex["target"][:600]
             parts.append(f"SOURCE: {src_short}\nTRANSLATION: {tgt_short}")
         examples = EXAMPLES_TEMPLATE.format(examples="\n---\n".join(parts))
-    return TRANSLATION_SYSTEM.format(
+    system = TRANSLATION_SYSTEM.format(
         src=lang_name(src), tgt=lang_name(tgt), glossary=glossary, examples=examples
     )
+    if doc_summary:
+        system += SUMMARY_TEMPLATE.format(summary=doc_summary[:1500])
+    return system
+
+
+def build_user_message(masked_text: str, source_context: str | None = None) -> str:
+    if source_context:
+        return (
+            SOURCE_CONTEXT_TEMPLATE.format(context=source_context)
+            + "\nTEXT TO TRANSLATE:\n" + masked_text
+        )
+    return masked_text

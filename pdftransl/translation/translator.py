@@ -1,8 +1,14 @@
-"""Segment building and LLM translation with self-repair loop."""
+"""Segment building and LLM translation with self-repair loop.
+
+Segments are independent by construction (placeholder ids are
+document-unique, context comes from the *source* side), so they are
+translated in parallel with a thread pool when ``max_workers > 1``.
+"""
 
 from __future__ import annotations
 
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Callable, Optional
 
 from pdftransl.config import PipelineConfig
@@ -10,7 +16,11 @@ from pdftransl.llm.base import BaseLLMClient
 from pdftransl.masking import Masker, unmask
 from pdftransl.models import Block, QAIssue, Segment, new_id
 from pdftransl.quality.validators import validate_segment
-from pdftransl.translation.prompts import REPAIR_USER, build_translation_system
+from pdftransl.translation.prompts import (
+    REPAIR_USER,
+    build_translation_system,
+    build_user_message,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -84,9 +94,14 @@ class Translator:
         self.client = client
         self.config = config
         self.retriever = retriever
+        # Document-level context, set once per document by the pipeline.
+        self.doc_summary: str = ""
+        self.doc_terms: list[dict[str, str]] = []
 
     # -- single segment ------------------------------------------------
-    def translate_segment(self, segment: Segment) -> Segment:
+    def translate_segment(
+        self, segment: Segment, source_context: str = ""
+    ) -> Segment:
         if segment.kind != "translate":
             return segment
 
@@ -104,15 +119,23 @@ class Translator:
                 )
                 return segment
 
+        # Per-document terms + stored glossary hits found in this segment.
+        doc_hits = [
+            t for t in self.doc_terms
+            if t["term"].lower() in segment.source_text.lower()
+        ]
+        glossary_terms = doc_hits + (segment.glossary_hits or [])
         system = build_translation_system(
             cfg.source_lang,
             cfg.target_lang,
-            glossary_terms=segment.glossary_hits or None,
+            glossary_terms=glossary_terms or None,
             tm_examples=segment.tm_examples or None,
+            doc_summary=self.doc_summary or None,
         )
+        user = build_user_message(segment.masked_text, source_context or None)
         messages = [
             {"role": "system", "content": system},
-            {"role": "user", "content": segment.masked_text},
+            {"role": "user", "content": user},
         ]
 
         raw = self.client.chat(
@@ -179,15 +202,48 @@ class Translator:
         segments: list[Segment],
         progress: Optional[ProgressCb] = None,
     ) -> list[Segment]:
-        total = sum(1 for s in segments if s.kind == "translate")
-        done = 0
+        # Source-side context (parallel-safe): the tail of the previous
+        # segment's source text smooths chunk-boundary seams.
+        ctx_chars = self.config.source_context_chars
+        contexts: dict[str, str] = {}
+        prev_source = ""
         for segment in segments:
-            if segment.kind != "translate":
-                continue
-            self.translate_segment(segment)
-            done += 1
-            if progress:
-                progress(done, total, segment.id)
+            if segment.kind == "translate" and ctx_chars > 0 and prev_source:
+                contexts[segment.id] = prev_source[-ctx_chars:]
+            if segment.source_text.strip():
+                prev_source = segment.source_text
+        to_translate = [s for s in segments if s.kind == "translate"]
+        total = len(to_translate)
+        done = 0
+
+        workers = max(1, self.config.max_workers)
+        if workers == 1 or total <= 1:
+            for segment in to_translate:
+                self.translate_segment(segment, contexts.get(segment.id, ""))
+                done += 1
+                if progress:
+                    progress(done, total, segment.id)
+            return segments
+
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = {
+                pool.submit(
+                    self.translate_segment, seg, contexts.get(seg.id, "")
+                ): seg
+                for seg in to_translate
+            }
+            for future in as_completed(futures):
+                segment = futures[future]
+                try:
+                    future.result()
+                except Exception as exc:
+                    logger.error("Segment %s failed: %s", segment.id, exc)
+                    segment.issues.append(
+                        QAIssue("exception", f"translation call failed: {exc}", "error")
+                    )
+                done += 1
+                if progress:
+                    progress(done, total, segment.id)
         return segments
 
 

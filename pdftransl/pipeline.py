@@ -1,9 +1,11 @@
 """End-to-end pipeline orchestration.
 
-    PDF -> parse (MinerU/PyMuPDF) -> split into blocks -> mask formulas
-        -> RAG context -> LLM translate -> validate -> repair loop
-        -> LLM review -> assemble markdown -> export assets & report
-        -> learn (store pairs into translation memory)
+    PDF -> parse (cached; MinerU/PyMuPDF) -> split into blocks
+        -> mark References section -> document summary + auto-glossary
+        -> mask formulas -> RAG context -> parallel LLM translation
+        -> validate -> repair loop -> LLM review -> back-translation
+        -> LaTeX syntax check -> assemble markdown (optionally bilingual)
+        -> export HTML/DOCX/PDF -> assets & report -> learn (TM)
 """
 
 from __future__ import annotations
@@ -14,25 +16,46 @@ import time
 from pathlib import Path
 from typing import Callable, Optional
 
-from pdftransl.config import PipelineConfig
+from pdftransl.config import PipelineConfig, get_provider_config
+from pdftransl.export.exporter import export_document
 from pdftransl.llm.base import BaseLLMClient
+from pdftransl.llm.fallback import FallbackClient
 from pdftransl.llm.registry import create_client
 from pdftransl.masking import Masker
-from pdftransl.models import JobResult, ParsedDocument, Segment, new_id
+from pdftransl.models import JobResult, ParsedDocument, new_id
 from pdftransl.parsing.base import get_backend
-from pdftransl.parsing.splitter import assemble, split_markdown
+from pdftransl.parsing.cache import ParseCache
+from pdftransl.parsing.splitter import assemble, mark_references, split_markdown
+from pdftransl.quality.backtranslation import check_segments as backtranslation_check
+from pdftransl.quality.latex_check import check_document as latex_check
 from pdftransl.quality.reviewer import Reviewer
 from pdftransl.quality.validators import document_report
 from pdftransl.rag.embeddings import get_embedder
 from pdftransl.rag.glossary import Glossary
 from pdftransl.rag.retriever import RAGContextBuilder
 from pdftransl.rag.store import TranslationMemory
+from pdftransl.translation.doc_context import build_doc_summary, extract_terms
 from pdftransl.translation.figures import describe_figures
 from pdftransl.translation.translator import Translator, build_segments
 
 logger = logging.getLogger(__name__)
 
 StageCb = Callable[[str, float], None]  # (stage_name, progress 0..1)
+
+
+def _build_client(config: PipelineConfig) -> BaseLLMClient:
+    primary = create_client(config.provider_config())
+    if not config.fallback_providers:
+        return primary
+    chain = [primary]
+    for name in config.fallback_providers:
+        if name == config.provider:
+            continue
+        try:
+            chain.append(create_client(get_provider_config(name)))
+        except Exception as exc:
+            logger.warning("Fallback provider %s unavailable: %s", name, exc)
+    return FallbackClient(chain) if len(chain) > 1 else primary
 
 
 class TranslationPipeline:
@@ -44,10 +67,10 @@ class TranslationPipeline:
         glossary: Optional[Glossary] = None,
     ):
         self.config = config or PipelineConfig.from_env()
-        self.client = client or create_client(self.config.provider_config())
+        self.client = client or _build_client(self.config)
+        self.embedder = get_embedder(self.config)
         if self.config.use_rag:
-            embedder = get_embedder(self.config)
-            self.tm = tm or TranslationMemory(self.config.db_path, embedder)
+            self.tm = tm or TranslationMemory(self.config.db_path, self.embedder)
             self.glossary = glossary or Glossary(self.config.db_path)
             self.retriever = RAGContextBuilder(self.config, self.tm, self.glossary)
         else:
@@ -65,7 +88,7 @@ class TranslationPipeline:
         job_id: Optional[str] = None,
         on_stage: Optional[StageCb] = None,
     ) -> JobResult:
-        """Full run: PDF in, translated markdown + assets + report out."""
+        """Full run: PDF in; translated markdown/HTML/DOCX/PDF out."""
         job_id = job_id or new_id("job_")
         pdf_path = Path(pdf_path)
         out_dir = Path(output_dir or self.config.output_dir) / pdf_path.stem
@@ -90,6 +113,8 @@ class TranslationPipeline:
             result.source_markdown_path = str(source_md_path)
             result.report["duration_sec"] = round(time.time() - started, 1)
             result.report["parser_backend"] = parsed.backend
+            if parsed.meta.get("cache"):
+                result.report["parse_cache"] = "hit"
             report_path = out_dir / "report.json"
             result.report_path = str(report_path)
             result.save_report(report_path)
@@ -104,6 +129,7 @@ class TranslationPipeline:
         output_path: str | Path,
         job_id: Optional[str] = None,
         on_stage: Optional[StageCb] = None,
+        assets_dir: Optional[str | Path] = None,
     ) -> JobResult:
         """Translate an already-parsed markdown document (skip parsing)."""
         job_id = job_id or new_id("job_")
@@ -115,16 +141,28 @@ class TranslationPipeline:
             if on_stage:
                 on_stage(name, progress)
 
-        result = self._translate_parsed(
+        return self._translate_parsed(
             parsed, output_path.parent, job_id, stage, output_name=output_path.name
         )
-        return result
 
     # ------------------------------------------------------------------
     def _parse(self, pdf_path: Path, workdir: Path) -> ParsedDocument:
         backend = get_backend(self.config)
+        cache = (
+            ParseCache(self.config.output_dir) if self.config.parse_cache else None
+        )
+        if cache is not None:
+            cached = cache.get(pdf_path, backend.name)
+            if cached is not None:
+                return cached
         logger.info("Parsing %s with backend '%s'", pdf_path.name, backend.name)
-        return backend.parse(pdf_path, workdir)
+        parsed = backend.parse(pdf_path, workdir)
+        if cache is not None:
+            try:
+                cache.put(pdf_path, parsed)
+            except OSError as exc:
+                logger.warning("Parse cache write failed: %s", exc)
+        return parsed
 
     def _translate_parsed(
         self,
@@ -136,34 +174,62 @@ class TranslationPipeline:
     ) -> JobResult:
         cfg = self.config
 
-        # 1. structural split + segmentation with masking
-        stage("split", 0.1)
+        # 1. structural split; keep bibliography untranslated
+        stage("split", 0.05)
         blocks = split_markdown(parsed.markdown)
+        refs_skipped = mark_references(blocks) if cfg.skip_references else 0
         segments = build_segments(blocks, Masker(), cfg.chunk_char_budget)
         logger.info(
-            "[%s] %d blocks -> %d segments (%d to translate)",
+            "[%s] %d blocks -> %d segments (%d to translate, %d reference blocks kept)",
             job_id, len(blocks), len(segments),
-            sum(1 for s in segments if s.kind == "translate"),
+            sum(1 for s in segments if s.kind == "translate"), refs_skipped,
         )
 
-        # 2. translate with validation + repair loop
+        # 2. document-level context: summary + auto-extracted glossary
+        if cfg.doc_summary:
+            stage("context", 0.08)
+            self.translator.doc_summary = build_doc_summary(
+                parsed.markdown, self.client, cfg
+            )
+        if cfg.auto_glossary:
+            stage("context", 0.1)
+            self.translator.doc_terms = extract_terms(
+                parsed.markdown, self.client, cfg
+            )
+            logger.info("[%s] auto-glossary: %d terms",
+                        job_id, len(self.translator.doc_terms))
+
+        # 3. parallel translation with validation + repair loop
         def progress(done: int, total: int, _seg_id: str) -> None:
-            stage("translate", 0.1 + 0.6 * (done / max(total, 1)))
+            stage("translate", 0.1 + 0.5 * (done / max(total, 1)))
 
         self.translator.translate_segments(segments, progress=progress)
 
-        # 3. LLM review of flagged segments
+        # 4. LLM review of flagged segments
         if self.reviewer is not None:
-            stage("review", 0.75)
+            stage("review", 0.65)
             self.reviewer.review_segments(segments, only_flagged=True)
 
-        # 4. assemble output document
-        stage("assemble", 0.85)
+        # 5. optional back-translation semantic check
+        if cfg.backtranslation_check:
+            stage("backtranslation", 0.72)
+            backtranslation_check(segments, self.client, self.embedder, cfg)
+
+        # 6. assemble output document (+ bilingual variant)
+        stage("assemble", 0.78)
         translated_md = assemble([s.final_text() for s in segments])
         output_path = out_dir / output_name
         output_path.write_text(translated_md, encoding="utf-8")
+        bilingual_path: Optional[Path] = None
+        if cfg.bilingual:
+            bilingual_md = assemble(_bilingual_texts(segments))
+            bilingual_path = output_path.with_suffix(".bilingual.md")
+            bilingual_path.write_text(bilingual_md, encoding="utf-8")
 
-        # 5. export assets next to the translated markdown
+        # 7. LaTeX syntax check over the final document
+        latex_issues = latex_check(translated_md)
+
+        # 8. export assets next to the translated markdown
         assets_dir: Optional[Path] = None
         if parsed.assets:
             assets_dir = out_dir / "assets"
@@ -176,9 +242,9 @@ class TranslationPipeline:
                     if src.resolve() != dst.resolve():
                         shutil.copy2(src, dst)
 
-        # 6. optional VLM figure descriptions
+        # 9. optional VLM figure descriptions
         if cfg.describe_figures and parsed.assets:
-            stage("figures", 0.9)
+            stage("figures", 0.82)
             vision_client = self._vision_client()
             if vision_client is not None:
                 describe_figures(
@@ -186,7 +252,20 @@ class TranslationPipeline:
                     output_json=out_dir / "figures.json",
                 )
 
-        # 7. learn: push good pairs into the translation memory
+        # 10. export to HTML / DOCX / PDF
+        export_result = {"files": {}, "engines": {}}
+        if cfg.export_formats:
+            stage("export", 0.88)
+            title = _first_heading(translated_md) or output_path.stem
+            export_result = export_document(
+                translated_md,
+                out_base=output_path.with_suffix(""),
+                formats=cfg.export_formats,
+                assets_dir=assets_dir,
+                title=title,
+            )
+
+        # 11. learn: push good pairs into the translation memory
         if cfg.learn and self.tm is not None:
             stage("learn", 0.95)
             learned = 0
@@ -201,13 +280,21 @@ class TranslationPipeline:
                         segment.source_text, segment.translation,
                         cfg.source_lang, cfg.target_lang,
                         origin="auto", doc_id=job_id,
+                        domain=cfg.tm_domain or "",
                     )
                     learned += 1
             logger.info("[%s] stored %d segments into translation memory", job_id, learned)
 
-        # 8. report
+        # 12. report
         report = document_report(segments)
         report["assets"] = [a.to_dict() for a in parsed.assets]
+        report["references_blocks_kept"] = refs_skipped
+        report["latex_issues"] = [i.to_dict() for i in latex_issues]
+        report["export_engines"] = export_result["engines"]
+        if bilingual_path is not None:
+            report["bilingual_markdown"] = str(bilingual_path)
+        if self.translator.doc_terms:
+            report["auto_glossary"] = self.translator.doc_terms
         status = "completed" if report["segments_failed"] == 0 else "partial"
         stage("done", 1.0)
         return JobResult(
@@ -216,6 +303,8 @@ class TranslationPipeline:
             output_markdown_path=str(output_path),
             assets_dir=str(assets_dir) if assets_dir else None,
             report=report,
+            exports=export_result["files"],
+            segments=[s.to_dict() for s in segments],
         )
 
     def _vision_client(self) -> Optional[BaseLLMClient]:
@@ -226,3 +315,23 @@ class TranslationPipeline:
         except Exception as exc:
             logger.warning("Vision client unavailable: %s", exc)
             return None
+
+
+def _bilingual_texts(segments) -> list[str]:
+    """Alternate source/translation for proofreading output."""
+    texts = []
+    for segment in segments:
+        if segment.kind == "translate" and segment.translation:
+            quoted = "\n".join("> " + line for line in segment.source_text.splitlines())
+            texts.append(quoted)
+            texts.append(segment.translation)
+        else:
+            texts.append(segment.source_text)
+    return texts
+
+
+def _first_heading(markdown: str) -> Optional[str]:
+    for line in markdown.splitlines():
+        if line.startswith("#"):
+            return line.lstrip("# ").strip()
+    return None

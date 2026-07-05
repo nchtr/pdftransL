@@ -1,0 +1,12 @@
+.git
+data/
+venv/
+__pycache__/
+*.pyc
+frontend/node_modules/
+frontend/dist/
+tests/
+docs/
+*.md
+!README.md
+.env

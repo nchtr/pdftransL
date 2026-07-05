@@ -1,0 +1,75 @@
+services:
+  web:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      USE_CELERY: "1"
+      CELERY_BROKER_URL: redis://redis:6379/0
+      DJANGO_DEBUG: "0"
+      DJANGO_ALLOWED_HOSTS: "*"
+      # provider keys (set in .env next to this file)
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      MINERU_API_KEY: ${MINERU_API_KEY:-}
+      # point at the ollama service for local models
+      PDFTRANSL_PROVIDER: ${PDFTRANSL_PROVIDER:-openrouter}
+      PDFTRANSL_BASE_URL: ${PDFTRANSL_BASE_URL:-}
+    volumes:
+      - pdftransl-data:/data
+    depends_on:
+      - redis
+
+  worker:
+    build: .
+    command: sh -c "cd /app/backend && celery -A config worker -l info --concurrency 2"
+    environment:
+      USE_CELERY: "1"
+      CELERY_BROKER_URL: redis://redis:6379/0
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      MINERU_API_KEY: ${MINERU_API_KEY:-}
+      PDFTRANSL_PROVIDER: ${PDFTRANSL_PROVIDER:-openrouter}
+      PDFTRANSL_BASE_URL: ${PDFTRANSL_BASE_URL:-}
+    volumes:
+      - pdftransl-data:/data
+    depends_on:
+      - redis
+
+  bot:
+    build: .
+    command: sh -c "cd /app && python -m bot"
+    profiles: ["bot"]           # docker compose --profile bot up
+    environment:
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      MINERU_API_KEY: ${MINERU_API_KEY:-}
+      PDFTRANSL_DATA_DIR: /data
+      PDFTRANSL_PROVIDER: ${PDFTRANSL_PROVIDER:-openrouter}
+    volumes:
+      - pdftransl-data:/data
+
+  redis:
+    image: redis:7-alpine
+    volumes:
+      - redis-data:/data
+
+  # local inference (optional): docker compose --profile local up
+  ollama:
+    image: ollama/ollama:latest
+    profiles: ["local"]
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+
+volumes:
+  pdftransl-data:
+  redis-data:
+  ollama-data:

@@ -34,6 +34,7 @@ class RAGContextBuilder:
                 cfg.target_lang,
                 top_k=cfg.tm_top_k,
                 min_similarity=cfg.tm_min_similarity,
+                domain=cfg.tm_domain,
             )
         if self.glossary is not None:
             context["glossary_hits"] = self.glossary.match(

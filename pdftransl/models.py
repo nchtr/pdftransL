@@ -105,6 +105,19 @@ class Segment:
             return self.translation
         return self.source_text  # graceful degradation: keep source
 
+    def to_dict(self) -> dict[str, Any]:
+        """Serializable view for backends storing segments (review UI)."""
+        return {
+            "id": self.id,
+            "kind": self.kind,
+            "source_text": self.source_text,
+            "translation": self.translation,
+            "block_indices": self.block_indices,
+            "ok": self.ok,
+            "attempts": self.attempts,
+            "issues": [i.to_dict() for i in self.issues],
+        }
+
 
 @dataclass
 class JobResult:
@@ -118,9 +131,16 @@ class JobResult:
     report_path: Optional[str] = None
     report: dict[str, Any] = field(default_factory=dict)
     error: Optional[str] = None
+    # format -> exported file path (html/docx/pdf), None if engine missing
+    exports: dict[str, Optional[str]] = field(default_factory=dict)
+    # serialized segments for backends that store them (review UI)
+    segments: list[dict[str, Any]] = field(default_factory=list)
 
-    def to_dict(self) -> dict[str, Any]:
-        return dataclasses.asdict(self)
+    def to_dict(self, include_segments: bool = False) -> dict[str, Any]:
+        data = dataclasses.asdict(self)
+        if not include_segments:
+            data.pop("segments", None)
+        return data
 
     def save_report(self, path: str | Path) -> None:
         Path(path).parent.mkdir(parents=True, exist_ok=True)

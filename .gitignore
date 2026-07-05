@@ -19,8 +19,12 @@ dist/
 *.log
 
 # Output files
-data/output/
-data/input/*.pdf
+data/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/package-lock.json
 
 # Hermes/local config
 .hermes/

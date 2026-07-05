@@ -33,6 +33,8 @@ CREATE TABLE IF NOT EXISTS tm_segments (
     origin TEXT NOT NULL DEFAULT 'auto',      -- auto | human
     quality REAL,
     doc_id TEXT,
+    domain TEXT NOT NULL DEFAULT '',          -- subject area filter
+
     embedding TEXT,                           -- JSON list[float]
     embedder TEXT,
     created_at REAL NOT NULL
@@ -56,6 +58,12 @@ class TranslationMemory:
         self._lock = threading.Lock()
         with self._connect() as conn:
             conn.executescript(_SCHEMA)
+            # migrate pre-domain databases
+            cols = [r[1] for r in conn.execute("PRAGMA table_info(tm_segments)")]
+            if "domain" not in cols:
+                conn.execute(
+                    "ALTER TABLE tm_segments ADD COLUMN domain TEXT NOT NULL DEFAULT ''"
+                )
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path)
@@ -72,6 +80,7 @@ class TranslationMemory:
         origin: str = "auto",
         quality: Optional[float] = None,
         doc_id: Optional[str] = None,
+        domain: str = "",
     ) -> None:
         source = source.strip()
         target = target.strip()
@@ -88,11 +97,11 @@ class TranslationMemory:
                 )
             conn.execute(
                 "INSERT INTO tm_segments (source_hash, source, target, src_lang, "
-                "tgt_lang, origin, quality, doc_id, embedding, embedder, created_at) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                "tgt_lang, origin, quality, doc_id, domain, embedding, embedder, "
+                "created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     _hash(source), source, target, src_lang, tgt_lang,
-                    origin, quality, doc_id,
+                    origin, quality, doc_id, domain,
                     json.dumps(vector), self.embedder.name, time.time(),
                 ),
             )
@@ -116,17 +125,22 @@ class TranslationMemory:
         tgt_lang: str,
         top_k: int = 3,
         min_similarity: float = 0.8,
+        domain: Optional[str] = None,
     ) -> list[dict]:
         """Cosine search over stored segments of the same language pair
         and the same embedder (vectors from different embedders are
-        incomparable)."""
+        incomparable). ``domain`` restricts to one subject area."""
         query_vec = self.embedder.embed([query])[0]
+        sql = (
+            "SELECT source, target, origin, embedding FROM tm_segments "
+            "WHERE src_lang=? AND tgt_lang=? AND embedder=?"
+        )
+        params: list = [src_lang, tgt_lang, self.embedder.name]
+        if domain:
+            sql += " AND domain IN ('', ?)"
+            params.append(domain)
         with self._connect() as conn:
-            rows = conn.execute(
-                "SELECT source, target, origin, embedding FROM tm_segments "
-                "WHERE src_lang=? AND tgt_lang=? AND embedder=?",
-                (src_lang, tgt_lang, self.embedder.name),
-            ).fetchall()
+            rows = conn.execute(sql, params).fetchall()
         scored = []
         for row in rows:
             vec = json.loads(row["embedding"]) if row["embedding"] else []

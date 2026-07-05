@@ -137,3 +137,38 @@ def split_markdown(markdown: str) -> list[Block]:
 def assemble(blocks_text: list[str]) -> str:
     """Join block texts back into a Markdown document."""
     return "\n\n".join(t for t in blocks_text if t.strip() != "") + "\n"
+
+
+_REFERENCES_HEADING_RE = re.compile(
+    r"^#{1,6}\s*(?:\d+\.?\s*)?(references|bibliography|список литературы|литература|"
+    r"cited works|works cited)\s*$",
+    re.IGNORECASE,
+)
+# Headings that end the references section (appendices etc.)
+_POST_REFERENCES_RE = re.compile(
+    r"^#{1,6}\s*(?:[A-Z]?\d*\.?\s*)?(appendix|supplementary|acknowledg|приложение)",
+    re.IGNORECASE,
+)
+
+
+def mark_references(blocks: list[Block]) -> int:
+    """Mark the bibliography section as non-translatable.
+
+    Reference entries (authors, titles, venues) should stay in the
+    original language — translating them breaks citability. Returns
+    the number of blocks marked.
+    """
+    marked = 0
+    in_refs = False
+    for block in blocks:
+        if block.type == BlockType.HEADING:
+            if _REFERENCES_HEADING_RE.match(block.text.strip()):
+                in_refs = True
+                continue  # the heading itself stays translatable
+            if in_refs and _POST_REFERENCES_RE.match(block.text.strip()):
+                in_refs = False
+        elif in_refs and block.translatable:
+            block.translatable = False
+            block.meta["skipped"] = "references"
+            marked += 1
+    return marked
