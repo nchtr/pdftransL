@@ -25,9 +25,12 @@ RUN pip install --no-cache-dir -e ".[pymupdf,export,backend,bot]" weasyprint
 COPY backend/ backend/
 COPY bot/ bot/
 COPY --from=frontend /app/frontend/dist frontend/dist
+# KaTeX dist for offline formula rendering in HTML/PDF exports
+COPY --from=frontend /app/frontend/node_modules/katex/dist /app/vendor/katex
 
 ENV PDFTRANSL_DATA_DIR=/data \
     DJANGO_SETTINGS_MODULE=config.settings \
+    PDFTRANSL_KATEX_DIR=/app/vendor/katex \
     PYTHONUNBUFFERED=1
 
 WORKDIR /app/backend

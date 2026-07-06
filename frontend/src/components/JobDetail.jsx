@@ -83,6 +83,15 @@ export default function JobDetail({ jobId, onClose, onError }) {
       </p>
       {job.error && <p className="error-text">{job.error}</p>}
 
+      {report.scan_warning && (
+        <p className="warn-text">⚠ {report.scan_warning}</p>
+      )}
+      {report.ocr && (
+        <p className="muted">
+          Распознано OCR-страниц: {report.ocr.pages_transcribed}
+        </p>
+      )}
+
       {report.segments_translated != null && (
         <p className="muted">
           Сегментов переведено: {report.segments_translated}, проблемных:{' '}

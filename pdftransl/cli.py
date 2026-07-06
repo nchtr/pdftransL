@@ -30,7 +30,14 @@ def _add_common(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--source-lang", default=None)
     parser.add_argument("--target-lang", default=None)
     parser.add_argument("--backend", default=None,
-                        help="parser backend: auto|mineru_local|mineru_api|pymupdf")
+                        help="parser backend: auto|mineru_local|mineru_api|marker|"
+                             "docling|vlm_ocr|pymupdf")
+    parser.add_argument("--vision-provider", default=None,
+                        help="provider for VLM OCR / figure description (defaults to --provider)")
+    parser.add_argument("--vision-model", default=None,
+                        help="vision model name (e.g. qwen2.5-vl for local OCR)")
+    parser.add_argument("--no-ocr", action="store_true",
+                        help="do not auto-route detected scans to VLM OCR")
     parser.add_argument("--no-rag", action="store_true", help="disable translation memory / RAG")
     parser.add_argument("--no-review", action="store_true", help="disable LLM review pass")
     parser.add_argument("--no-learn", action="store_true", help="do not store results into TM")
@@ -76,6 +83,12 @@ def _config_from_args(args: argparse.Namespace) -> PipelineConfig:
         overrides["target_lang"] = args.target_lang
     if args.backend:
         overrides["parser_backend"] = args.backend
+    if args.vision_provider:
+        overrides["vision_provider"] = args.vision_provider
+    if args.vision_model:
+        overrides["vision_model"] = args.vision_model
+    if args.no_ocr:
+        overrides["ocr_on_scan"] = False
     if args.no_rag:
         overrides["use_rag"] = False
     if args.no_review:

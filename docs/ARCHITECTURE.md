@@ -44,7 +44,14 @@
    marker, Docling или PyMuPDF-фолбэк; auto-режим берёт лучший из
    установленных. Картинки экспортируются в `Asset`; результат
    кэшируется по SHA-256 содержимого PDF (`parsing/cache.py`) — повторная
-   загрузка того же файла не тратит GPU/API.
+   загрузка того же файла не тратит GPU/API. Перед парсингом
+   `parsing/scan_detect.py` проверяет, не скан ли это (страницы без
+   текстового слоя, покрытые изображением): если да и есть vision-модель,
+   документ автоматически уходит в `parsing/vlm_ocr_backend.py` — тот
+   рендерит страницы в картинки и просит VLM транскрибировать их в
+   Markdown+LaTeX (распознаёт и формулы; работает и локально через
+   qwen2.5-vl). Если vision-модели нет — предупреждение в отчёт вместо
+   молча пустого результата.
 2. **split + references** — `parsing/splitter.py` разбивает Markdown на
    типизированные блоки; `mark_references()` находит секцию
    References/Bibliography (в т.ч. «Список литературы») и оставляет её
@@ -87,11 +94,18 @@
     дополнительно собирается документ «цитата-оригинал → перевод».
 11. **export** — `export/exporter.py`, движки по убыванию качества:
     - **DOCX**: pandoc (LaTeX → нативные формулы Word/OMML) →
-      python-docx (структура/таблицы/картинки, формулы текстом);
+      python-docx; в фолбэке формулы рендерятся в картинки через
+      matplotlib mathtext (`export/formula_render.py`) — видна настоящая
+      формула, а не сырой LaTeX (что вне подмножества mathtext — падает
+      обратно в текст). Текст санитизируется от control-символов.
     - **PDF**: pandoc+xelatex → headless Chromium печать нашего
       KaTeX-HTML (`PDFTRANSL_CHROMIUM` — свой бинарь) → weasyprint;
-    - **HTML**: собственный конвертер + KaTeX, картинки инлайнятся
-      data-URI — файл полностью автономен;
+    - **HTML**: собственный конвертер + KaTeX. KaTeX вшивается офлайн
+      (`export/katex_assets.py`: инлайн CSS+JS, шрифты data-URI из
+      `frontend/node_modules/katex/dist` или `PDFTRANSL_KATEX_DIR`),
+      картинки — data-URI: файл полностью автономен и формулы рендерятся
+      без сети (в т.ч. в Chromium-PDF). Без вендоренного KaTeX — фолбэк
+      на CDN.
     - **LaTeX**: `export/latex.py` — компилируемый .tex проект.
     Недоступность движка не роняет пайплайн: в отчёте
     `export_engines` указана причина. При `render_check=True` итоговый
@@ -132,7 +146,7 @@ aiogram v3, long polling. Приём PDF → прогресс редактиро
 
 | Интерфейс | Файл | Реализации | Как расширить |
 |---|---|---|---|
-| `ParserBackend` | `parsing/base.py` | MinerU local/API, marker, Docling, PyMuPDF | Nougat, GROBID |
+| `ParserBackend` | `parsing/base.py` | MinerU local/API, marker, Docling, vlm_ocr (сканы), PyMuPDF | Nougat, GROBID |
 | `BaseLLMClient` | `llm/base.py` | OpenAI-compat, Anthropic, Fallback, Fake | любой API |
 | `BaseEmbedder` | `rag/embeddings.py` | hashing, sentence-transformers, API | — |
 | экспорт-движок | `export/exporter.py` | pandoc, python-docx, chromium, weasyprint, latex | typst, LibreOffice |

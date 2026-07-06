@@ -208,6 +208,11 @@ class PipelineConfig:
     vision_model: Optional[str] = None
     max_figures: int = 30
 
+    # Scanned / image-only PDFs (OCR)
+    ocr_on_scan: bool = True            # auto-route detected scans to VLM OCR
+    ocr_dpi: int = 200                  # page render resolution for OCR
+    max_ocr_pages: int = 50             # cap VLM OCR calls per document
+
     # Output
     bilingual: bool = False             # alternate source/translation paragraphs
     export_formats: list[str] = field(default_factory=lambda: ["html"])
@@ -234,6 +239,8 @@ class PipelineConfig:
             "PDFTRANSL_BASE_URL": "base_url",
             "PDFTRANSL_DB": "db_path",
             "PDFTRANSL_OUTPUT_DIR": "output_dir",
+            "PDFTRANSL_VISION_PROVIDER": "vision_provider",
+            "PDFTRANSL_VISION_MODEL": "vision_model",
         }
         for env_name, attr in mapping.items():
             if env.get(env_name):
@@ -252,11 +259,14 @@ class PipelineConfig:
             ("PDFTRANSL_FIX_LATEX", "fix_latex"),
             ("PDFTRANSL_RENDER_CHECK", "render_check"),
             ("PDFTRANSL_STRUCTURED_OUTPUTS", "structured_outputs"),
+            ("PDFTRANSL_OCR_ON_SCAN", "ocr_on_scan"),
         ):
             if env.get(flag) is not None:
                 kwargs[attr] = env[flag].strip().lower() in ("1", "true", "yes", "on")
         if env.get("PDFTRANSL_MAX_WORKERS"):
             kwargs["max_workers"] = int(env["PDFTRANSL_MAX_WORKERS"])
+        if env.get("PDFTRANSL_OCR_DPI"):
+            kwargs["ocr_dpi"] = int(env["PDFTRANSL_OCR_DPI"])
         if env.get("PDFTRANSL_RPM"):
             kwargs["rpm_limit"] = int(env["PDFTRANSL_RPM"])
         if env.get("PDFTRANSL_FALLBACK_PROVIDERS"):
@@ -277,9 +287,15 @@ class PipelineConfig:
         )
 
     def vision_provider_config(self) -> ProviderConfig:
-        return get_provider_config(
+        cfg = get_provider_config(
             self.vision_provider or self.provider,
             model=self.vision_model,
             base_url=self.base_url if not self.vision_provider else None,
             api_key=self.api_key if not self.vision_provider else None,
         )
+        # An explicitly chosen vision model signals intent — trust it as
+        # vision-capable even for local presets marked non-vision, so
+        # scanned PDFs auto-route to OCR (e.g. ollama + qwen2.5-vl).
+        if self.vision_model or self.vision_provider:
+            cfg.supports_vision = True
+        return cfg

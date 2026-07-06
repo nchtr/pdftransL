@@ -51,6 +51,7 @@ def get_backend(config: PipelineConfig) -> ParserBackend:
     from pdftransl.parsing.mineru_api import MineruApiBackend
     from pdftransl.parsing.mineru_local import MineruLocalBackend
     from pdftransl.parsing.pymupdf_backend import PyMuPdfBackend
+    from pdftransl.parsing.vlm_ocr_backend import VlmOcrBackend
 
     name = config.parser_backend
     if name == "auto":
@@ -74,6 +75,7 @@ def get_backend(config: PipelineConfig) -> ParserBackend:
         "mineru_api": MineruApiBackend(config),
         "marker": MarkerBackend(),
         "docling": DoclingBackend(),
+        "vlm_ocr": VlmOcrBackend(config),
         "pymupdf": PyMuPdfBackend(),
     }
     if name not in backends:

@@ -42,6 +42,9 @@ logger = logging.getLogger(__name__)
 
 StageCb = Callable[[str, float], None]  # (stage_name, progress 0..1)
 
+# Backends that already handle scanned pages (OCR); others get scan detection.
+_OCR_BACKENDS = {"mineru_local", "mineru_api", "vlm_ocr"}
+
 
 def _build_client(config: PipelineConfig) -> BaseLLMClient:
     # one shared limiter: the whole chain respects a single rpm budget
@@ -156,15 +159,52 @@ class TranslationPipeline:
     # ------------------------------------------------------------------
     def _parse(self, pdf_path: Path, workdir: Path) -> ParsedDocument:
         backend = get_backend(self.config)
+        scan: dict = {}
+
+        # Scanned/image-only PDFs have no text layer; a text extractor
+        # would silently yield an empty document. Detect and route to OCR.
+        if self.config.ocr_on_scan and backend.name not in _OCR_BACKENDS:
+            from pdftransl.parsing.scan_detect import scan_stats
+            from pdftransl.parsing.vlm_ocr_backend import VlmOcrBackend
+
+            scan = scan_stats(pdf_path)
+            if scan.get("is_scanned"):
+                # Auto-route only to a genuinely vision-capable client, so we
+                # never send page images to a text-only model. For a local VLM
+                # (marked non-vision in presets) select --backend vlm_ocr.
+                vclient = self._vision_client()
+                if vclient is not None and getattr(vclient, "supports_vision", False):
+                    logger.info(
+                        "Scanned PDF detected (%.0f chars/page); routing to VLM OCR",
+                        scan.get("chars_per_page", 0),
+                    )
+                    backend = VlmOcrBackend(self.config, client=vclient)
+                else:
+                    logger.warning(
+                        "Scanned PDF detected but no vision provider available for "
+                        "OCR — text and formulas will be missing. Set a vision "
+                        "provider, use MinerU, or pass --backend vlm_ocr."
+                    )
+
         cache = (
             ParseCache(self.config.output_dir) if self.config.parse_cache else None
         )
         if cache is not None:
             cached = cache.get(pdf_path, backend.name)
             if cached is not None:
+                if scan:
+                    cached.meta.setdefault("scan", scan)
                 return cached
         logger.info("Parsing %s with backend '%s'", pdf_path.name, backend.name)
         parsed = backend.parse(pdf_path, workdir)
+        if scan:
+            parsed.meta.setdefault("scan", scan)
+            if scan.get("is_scanned") and backend.name not in _OCR_BACKENDS:
+                parsed.meta["scan_warning"] = (
+                    "PDF appears to be scanned but was parsed without OCR; "
+                    "text and formulas are likely missing. Install a vision "
+                    "provider (e.g. Ollama qwen2.5-vl) or MinerU."
+                )
         if cache is not None:
             try:
                 cache.put(pdf_path, parsed)
@@ -320,6 +360,12 @@ class TranslationPipeline:
         report["assets"] = [a.to_dict() for a in parsed.assets]
         report["references_blocks_kept"] = refs_skipped
         report["latex_issues"] = [i.to_dict() for i in latex_issues]
+        if parsed.meta.get("scan"):
+            report["scan"] = parsed.meta["scan"]
+        if parsed.meta.get("scan_warning"):
+            report["scan_warning"] = parsed.meta["scan_warning"]
+        if parsed.meta.get("ocr"):
+            report["ocr"] = {"pages_transcribed": parsed.meta.get("pages_transcribed")}
         if latex_fixes:
             report["latex_fixes"] = latex_fixes
         if quality_scores:

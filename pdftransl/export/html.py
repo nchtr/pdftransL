@@ -16,23 +16,11 @@ import re
 from pathlib import Path
 from typing import Optional
 
+from pdftransl.export.katex_assets import katex_head
 from pdftransl.models import BlockType
 from pdftransl.parsing.splitter import split_markdown
 
 _MAX_INLINE_IMAGE = 4 * 1024 * 1024
-
-# KaTeX from CDN; rendering degrades to raw $...$ text when offline.
-_KATEX = """
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
-<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
-<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"
-  onload="renderMathInElement(document.body, {delimiters: [
-    {left: '$$', right: '$$', display: true},
-    {left: '\\\\[', right: '\\\\]', display: true},
-    {left: '$', right: '$', display: false},
-    {left: '\\\\(', right: '\\\\)', display: false}
-  ], throwOnError: false});"></script>
-"""
 
 _STYLE = """
 <style>
@@ -155,10 +143,11 @@ def markdown_to_html(
     markdown: str,
     title: str = "Translated document",
     assets_dir: Optional[str | Path] = None,
+    offline: bool = True,
 ) -> str:
     body = markdown_to_html_body(markdown, assets_dir)
     return (
         "<!DOCTYPE html>\n<html>\n<head>\n<meta charset=\"utf-8\">\n"
-        f"<title>{html_mod.escape(title)}</title>\n{_KATEX}{_STYLE}</head>\n"
+        f"<title>{html_mod.escape(title)}</title>\n{katex_head(offline)}{_STYLE}</head>\n"
         f"<body>\n{body}\n</body>\n</html>\n"
     )
