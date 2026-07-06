@@ -122,11 +122,60 @@ if [ "$OS" = "Darwin" ]; then
 elif [ -r /proc/meminfo ]; then
   TOTAL_GB=$(( $(awk '/MemTotal/ {print $2}' /proc/meminfo) / 1024 / 1024 ))
 fi
-if [ -z "$OLLAMA_MODEL" ]; then
-  if   [ "$TOTAL_GB" -ge 48 ]; then OLLAMA_MODEL="qwen2.5:32b"
-  elif [ "$TOTAL_GB" -ge 24 ]; then OLLAMA_MODEL="qwen2.5:14b"
-  else                              OLLAMA_MODEL="qwen2.5:7b"
+
+# рекомендация по объёму памяти (используется, если ничего не выбрано)
+if   [ "$TOTAL_GB" -ge 48 ]; then RECOMMENDED_MODEL="qwen2.5:32b"
+elif [ "$TOTAL_GB" -ge 24 ]; then RECOMMENDED_MODEL="qwen2.5:14b"
+else                              RECOMMENDED_MODEL="qwen2.5:7b"
+fi
+
+# опрашиваем Ollama: запущена ли и что уже скачано
+OLLAMA_RUNNING=0
+INSTALLED_MODELS=()
+if command -v ollama >/dev/null 2>&1 \
+   && curl -s --max-time 2 http://localhost:11434/api/tags >/dev/null 2>&1; then
+  OLLAMA_RUNNING=1
+  while IFS= read -r line; do
+    [ -n "$line" ] && INSTALLED_MODELS+=("$line")
+  done < <(ollama list 2>/dev/null | awk 'NR>1 && $1 != "" {print $1}')
+fi
+
+# --model имеет приоритет; иначе — предлагаем выбрать из уже скачанных
+if [ -n "$OLLAMA_MODEL" ]; then
+  note "Модель задана флагом --model: $OLLAMA_MODEL"
+elif [ "${#INSTALLED_MODELS[@]}" -gt 0 ]; then
+  say "Ollama уже содержит модели — выберите, какой переводить:"
+  idx=1
+  for m in "${INSTALLED_MODELS[@]}"; do
+    mark=""
+    [ "$m" = "$RECOMMENDED_MODEL" ] && mark=" ${DIM}(рекомендуется под вашу память)${RESET}"
+    printf "      %d) %s%s\n" "$idx" "$m" "$mark"
+    idx=$((idx + 1))
+  done
+  printf "      %d) скачать %s ${DIM}(рекомендуется под ~%d ГБ RAM)${RESET}\n" \
+         "$idx" "$RECOMMENDED_MODEL" "$TOTAL_GB"
+  if [ "$ASSUME_YES" = "1" ]; then
+    OLLAMA_MODEL=""
+    for m in "${INSTALLED_MODELS[@]}"; do
+      [ "$m" = "$RECOMMENDED_MODEL" ] && OLLAMA_MODEL="$m" && break
+    done
+    [ -z "$OLLAMA_MODEL" ] && OLLAMA_MODEL="${INSTALLED_MODELS[0]}"
+    note "Автовыбор (-y): $OLLAMA_MODEL"
+  else
+    read -r -p "    Номер [1]: " choice
+    choice="${choice:-1}"
+    if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -eq "$idx" ]; then
+      OLLAMA_MODEL="$RECOMMENDED_MODEL"
+    elif [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -lt "$idx" ]; then
+      OLLAMA_MODEL="${INSTALLED_MODELS[$((choice - 1))]}"
+    else
+      warn "Не понял выбор — беру рекомендованную $RECOMMENDED_MODEL"
+      OLLAMA_MODEL="$RECOMMENDED_MODEL"
+    fi
   fi
+else
+  # Ollama не запущена или без моделей — берём рекомендацию по памяти
+  OLLAMA_MODEL="$RECOMMENDED_MODEL"
 fi
 say "Локальная модель: $OLLAMA_MODEL (у машины ~${TOTAL_GB} ГБ RAM)"
 
@@ -141,24 +190,24 @@ if ! grep -q '^PDFTRANSL_PROVIDER=' .env 2>/dev/null; then
   } >> .env
 else
   note "PDFTRANSL_PROVIDER уже настроен в .env — не переопределяю"
+  note "(чтобы сменить модель, поправьте PDFTRANSL_MODEL в .env)"
 fi
 
-if command -v ollama >/dev/null 2>&1; then
-  say "Ollama установлена"
-  if curl -s --max-time 2 http://localhost:11434/api/tags >/dev/null 2>&1; then
-    note "Сервер Ollama работает."
-    if ! ollama list 2>/dev/null | grep -q "${OLLAMA_MODEL%%:*}"; then
-      if ask "Скачать модель $OLLAMA_MODEL сейчас? (несколько ГБ)"; then
-        ollama pull "$OLLAMA_MODEL"
-      fi
-    else
-      note "Модель уже скачана."
-    fi
-  else
-    warn "Ollama установлена, но сервер не отвечает. Запустите: ollama serve"
-    warn "(на macOS достаточно открыть приложение Ollama), затем:"
-    warn "  ollama pull $OLLAMA_MODEL"
+if [ "$OLLAMA_RUNNING" = "1" ]; then
+  say "Сервер Ollama работает"
+  model_present=0
+  for m in "${INSTALLED_MODELS[@]}"; do
+    [ "$m" = "$OLLAMA_MODEL" ] && model_present=1 && break
+  done
+  if [ "$model_present" = "1" ]; then
+    note "Модель $OLLAMA_MODEL уже скачана."
+  elif ask "Скачать модель $OLLAMA_MODEL сейчас? (несколько ГБ)"; then
+    ollama pull "$OLLAMA_MODEL"
   fi
+elif command -v ollama >/dev/null 2>&1; then
+  warn "Ollama установлена, но сервер не отвечает. Запустите: ollama serve"
+  warn "(на macOS достаточно открыть приложение Ollama), затем:"
+  warn "  ollama pull $OLLAMA_MODEL"
 else
   warn "Ollama не найдена. Как поставить (подробно — docs/OLLAMA.md):"
   if [ "$OS" = "Darwin" ]; then
