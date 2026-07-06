@@ -41,20 +41,22 @@ cd "$(dirname "$0")"
 OS="$(uname -s)"
 say "pdftransl quickstart ($OS)"
 
-# ---------- python ----------------------------------------------------------
+# ---------- python (только 3.12 или 3.13) -----------------------------------
 PYTHON=""
-for candidate in python3.12 python3.11 python3.10 python3; do
+for candidate in python3.13 python3.12 python3 python; do
   if command -v "$candidate" >/dev/null 2>&1; then
-    if "$candidate" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)'; then
+    # принимаем строго 3.12.x или 3.13.x
+    if "$candidate" -c 'import sys; sys.exit(0 if (3, 12) <= sys.version_info < (3, 14) else 1)' 2>/dev/null; then
       PYTHON="$candidate"; break
     fi
   fi
 done
 if [ -z "$PYTHON" ]; then
+  warn "Нужен Python 3.12 или 3.13 (другие версии не поддерживаются)."
   if [ "$OS" = "Darwin" ]; then
-    die "Нужен Python 3.10+. Проще всего: brew install python@3.12"
+    die "Установите: brew install python@3.13   (или python@3.12)"
   fi
-  die "Нужен Python 3.10+ (python3 не найден или слишком старый)."
+  die "Установите Python 3.12/3.13 — например через pyenv или пакетный менеджер."
 fi
 say "Python: $($PYTHON --version)"
 
