@@ -67,6 +67,7 @@ class AnthropicClient(BaseLLMClient):
         messages: list[Message],
         temperature: float = 0.2,
         max_tokens: Optional[int] = None,
+        response_format: Optional[dict] = None,  # not supported; JSON asked in prompt
     ) -> str:
         system = None
         converted = []

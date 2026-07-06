@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pdftransl"
-version = "0.2.0"
+version = "0.3.0"
 description = "Scientific PDF translation engine: parsing (LaTeX formulas, layout, figures), parallel LLM/VLM translation with self-verification, translation memory / RAG, DOCX/PDF/HTML export, Django backend, React UI, Telegram bot"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -19,6 +19,9 @@ dependencies = [
 mineru = ["mineru[core]>=2.0"]
 # Lightweight parsing fallback (text + embedded images, no formula recognition).
 pymupdf = ["PyMuPDF>=1.24"]
+# Alternative scientific-PDF parsers (lighter than MinerU, still ML-based).
+marker = ["marker-pdf>=1.0"]
+docling = ["docling>=2.0"]
 # Neural embeddings for the translation memory (otherwise a hashing fallback is used).
 rag = ["sentence-transformers>=3.0"]
 # DOCX/PDF export engines (pandoc is an external binary, install separately).

@@ -1,145 +1,176 @@
-# pdftransl — платформа перевода научных PDF
+# pdftransl
 
-Автоматический перевод научных статей со сложной вёрсткой: формулы,
-таблицы, рисунки. PDF парсится в Markdown с LaTeX, картинки и графики
-экспортируются отдельно, текст переводится локальными или облачными
-LLM/VLM параллельно и с самопроверкой, результат собирается обратно в
-**Markdown / HTML / DOCX / PDF** с сохранением структуры и
-форматирования. Накопленные переводы образуют translation memory
-(RAG + дообучение на правках человека).
+**Переводчик научных PDF, который не ломает формулы.**
 
-Состав монорепозитория:
+Загружаете статью — получаете перевод в Markdown, HTML, DOCX, PDF или
+LaTeX, где формулы, таблицы, картинки и структура остались на своих
+местах. Работает и с облачными моделями (OpenRouter, OpenAI, Anthropic,
+DeepSeek), и полностью локально на вашей машине через Ollama — без
+единого API-ключа и без отправки текстов наружу.
+
+Внутри — не «прогнать через ChatGPT», а честный пайплайн: парсинг с
+распознаванием формул в LaTeX, защита всего хрупкого плейсхолдерами,
+параллельный перевод с самопроверкой и циклом исправлений, LLM-ревью,
+память переводов, которая учится на ваших правках, и сборка результата
+обратно в приличный документ.
+
+## Самый быстрый способ попробовать
+
+```bash
+git clone <репозиторий> && cd pdftransL
+./quickstart.sh
+```
+
+Скрипт (писался под macOS, работает и на Linux) сам создаст окружение,
+поставит зависимости, соберёт веб-интерфейс, настроит `.env` под
+локальную Ollama и подскажет, какую модель скачать под вашу память.
+Дальше:
+
+```bash
+source .venv/bin/activate
+pdftransl translate статья.pdf --formats html,docx,pdf
+```
+
+Хотите максимальное качество распознавания формул — добавьте MinerU:
+`./quickstart.sh --with-mineru` (тяжёлый, зато лучший). Гайд по Ollama
+с выбором модели под ваше железо: [docs/OLLAMA.md](docs/OLLAMA.md).
+
+## Что в коробке
 
 | Каталог | Что это |
 |---|---|
-| `pdftransl/` | движок (Python-пакет + CLI `pdftransl`) |
-| `backend/` | Django-проект: JSON API, задачи, вычитка, админка |
-| `frontend/` | React SPA: загрузка, опции, прогресс, вычитка, скачивание |
-| `bot/` | Telegram-бот (aiogram v3) |
-| `docker-compose.yml` | web + celery-worker + redis + бот + ollama |
+| `pdftransl/` | движок + CLI — можно использовать как библиотеку |
+| `backend/` | Django: API, очередь задач, вычитка, админка |
+| `frontend/` | React-интерфейс: загрузка, опции, прогресс, вычитка |
+| `bot/` | телеграм-бот — кинул PDF, получил перевод файлами |
+| `quickstart.sh` | всё вышеперечисленное одной командой |
+| `docker-compose.yml` | то же самое, но в контейнерах |
+
+## Как это работает
 
 ```
-PDF ─> парсинг (MinerU / PyMuPDF, кэш по хэшу) ─> Markdown + LaTeX + ассеты
-    ─> блоки (References не переводятся) ─> саммари статьи + авто-глоссарий
-    ─> маскирование формул/кода/ссылок ─> RAG (память переводов + глоссарий)
-    ─> параллельный перевод LLM (fallback-цепочка провайдеров)
-    ─> валидаторы ─> цикл исправлений ─> LLM-ревью ─> back-translation чек
-    ─> сборка MD (+двуязычный) ─> LaTeX-проверка ─> экспорт HTML/DOCX/PDF
-    ─> QA-отчёт ─> обучение памяти переводов
+PDF ─→ парсинг (MinerU / marker / Docling / PyMuPDF; кэш по хэшу)
+    ─→ блоки: заголовки, абзацы, таблицы, формулы, картинки
+    ─→ References определяется и не переводится
+    ─→ саммари статьи + авто-глоссарий терминов (один LLM-проход)
+    ─→ формулы/код/ссылки прячутся за плейсхолдеры ⟦PH42⟧
+    ─→ память переводов: точные совпадения — бесплатно, похожие — примеры
+    ─→ параллельный перевод (fallback-цепочка провайдеров, rate-limit)
+    ─→ валидаторы → цикл исправлений → LLM-ревью → LLM-судья (опция)
+    ─→ сборка + LLM-починка битых формул + проверка LaTeX
+    ─→ экспорт: MD / HTML(KaTeX) / DOCX / PDF / LaTeX / двуязычный MD
+    ─→ QA-отчёт + пополнение памяти переводов
 ```
 
-## Возможности движка
+Главная идея — **плейсхолдеры**: всё, что модель может испортить
+(формулы, `\cite{}`, код, ссылки, номера цитирований), заменяется на
+токены `⟦PH42⟧` до перевода и побайтово возвращается после. Потерянный
+токен — жёсткая ошибка: модель получает список проблем и переводит
+заново. Что не удалось починить — остаётся в оригинале и честно
+перечисляется в `report.json`, ничего не теряется молча.
 
-- **Парсинг**: MinerU локально / облачный API (формулы → LaTeX, таблицы,
-  вёрстка) или PyMuPDF-фолбэк; экспорт картинок и графиков; кэш
-  результатов по содержимому PDF.
-- **Защита формул**: LaTeX, код, ссылки, URL и цитирования маскируются
-  плейсхолдерами `⟦PHn⟧` и восстанавливаются побайтово; целостность —
-  жёсткий валидатор с циклом исправлений.
-- **Провайдеры**: OpenRouter, OpenAI, Anthropic, DeepSeek и локальные
-  Ollama/vLLM/LM Studio/llama.cpp через один клиент; **fallback-цепочка**
-  (локальный → облачный) при сбоях; VLM-описания рисунков.
-- **Качество**: параллельный перевод сегментов; саммари документа и
-  **авто-глоссарий** в промпте (согласованная терминология); контекст
-  предыдущего сегмента; детерминированные валидаторы; LLM-ревью;
-  опциональный **back-translation** чек; синтаксическая проверка LaTeX
-  итогового документа; список литературы остаётся в оригинале.
-- **Обучение/RAG**: translation memory (SQLite + эмбеддинги) с доменными
-  тегами; точные совпадения — без вызова LLM; правки человека имеют
-  приоритет; экспорт JSONL-датасета для LoRA-дообучения.
-- **Экспорт**: HTML (KaTeX), DOCX (pandoc → нативные формулы Word, либо
-  python-docx), PDF (pandoc+xelatex → Chromium print → weasyprint), плюс
-  двуязычный Markdown для вычитки.
+**Память переводов** делает систему обучаемой: каждый удачный сегмент
+сохраняется, повторные документы переводятся мгновенно и бесплатно,
+похожие сегменты подаются модели как примеры, а ваши правки в вычитке
+имеют приоритет над автоматикой. Короткие правки-термины автоматически
+пополняют глоссарий. Накопили базу — можно выгрузить датасет и дообучить
+локальную модель ([docs/FINETUNING.md](docs/FINETUNING.md)).
 
-## Быстрый старт
-
-### 1. Движок + CLI
+## Веб-интерфейс
 
 ```bash
-pip install -e ".[pymupdf,export,dev]"    # + mineru для научных PDF
-cp .env.example .env                       # ключи провайдеров
-
-pdftransl translate article.pdf --formats html,docx,pdf
-pdftransl translate article.pdf --provider ollama --model qwen2.5:14b \
-    --fallback openrouter --workers 8 --bilingual
-pdftransl engines        # какие экспортные движки доступны
-pdftransl tm export dataset.jsonl
+cd backend && python manage.py runserver   # → http://localhost:8000
 ```
 
-### 2. Django-бэкенд + React UI
+Загрузка с опциями, живой прогресс по стадиям (SSE), скачивание во всех
+форматах и вычитка: оригинал и перевод бок о бок, клик по сегменту —
+правка — «Пересобрать файлы» — и DOCX/PDF обновились уже с вашими
+правками.
+
+В дев-режиме задачи крутятся в фоновых потоках — брокер не нужен. Для
+продакшена: `USE_CELERY=1`, redis, `celery -A config worker`. Открываете
+API наружу — задайте `PDFTRANSL_API_TOKEN` (Bearer-токен) и помните про
+лимит загрузок `PDFTRANSL_UPLOADS_PER_HOUR`.
+
+<details>
+<summary>Эндпоинты API</summary>
+
+| Метод | URL | Что делает |
+|---|---|---|
+| POST | `/api/jobs/` | загрузка: `file` + `source_lang`, `target_lang`, `provider`, `model`, `options` (JSON) |
+| GET | `/api/jobs/` | список задач |
+| GET | `/api/jobs/<id>/` | статус, прогресс, отчёт |
+| GET | `/api/jobs/<id>/events/` | SSE-стрим прогресса |
+| GET | `/api/jobs/<id>/segments/` | сегменты для вычитки (`?flagged=1` — только проблемные) |
+| POST | `/api/jobs/<id>/segments/<n>/correct/` | правка → память переводов |
+| POST | `/api/jobs/<id>/rebuild/` | пересборка всех форматов с правками |
+| GET | `/api/jobs/<id>/download/?format=` | `md`, `html`, `docx`, `pdf`, `latex`, `bilingual`, `report` |
+| GET/POST | `/api/glossary/` | глоссарий |
+| GET | `/api/tm/stats/`, `/api/providers/` | статистика TM, провайдеры и движки |
+
+</details>
+
+## Телеграм-бот
 
 ```bash
-pip install -e ".[pymupdf,export,backend]"
-cd frontend && npm install && npm run build && cd ..   # собрать SPA
-cd backend
-python manage.py migrate
-python manage.py runserver        # http://localhost:8000
-```
-
-Без Celery задачи выполняются в фоновых потоках (для разработки этого
-достаточно). Для продакшена: `USE_CELERY=1`, redis и
-`celery -A config worker`.
-
-Разработка фронтенда с горячей перезагрузкой:
-`cd frontend && npm run dev` (vite проксирует `/api` на :8000).
-
-**API**: `POST /api/jobs/` (multipart: `file`, `source_lang`,
-`target_lang`, `provider`, `model`, `options` JSON) → `GET
-/api/jobs/<id>/` (статус/прогресс) → `GET /api/jobs/<id>/download/
-?format=md|html|docx|pdf|bilingual|report`. Вычитка: `GET
-/api/jobs/<id>/segments/`, `POST /api/jobs/<id>/segments/<n>/correct/`,
-`POST /api/jobs/<id>/rebuild/` — пересборка всех форматов с правками.
-Плюс `/api/providers/`, `/api/glossary/`, `/api/tm/stats/`.
-
-### 3. Telegram-бот
-
-```bash
-pip install -e ".[bot]"
 TELEGRAM_BOT_TOKEN=... python -m bot
 ```
 
-Пользователь присылает PDF — бот показывает прогресс по стадиям и
-возвращает файлы в выбранных форматах. `/settings` — язык, форматы,
-провайдер, двуязычный режим (инлайн-кнопки, настройки сохраняются).
+Прислали PDF — бот показывает стадии перевода и возвращает файлы.
+`/settings` — язык, форматы, провайдер, двуязычный режим на
+инлайн-кнопках; настройки запоминаются per-chat.
 
-### 4. Docker
+## CLI на каждый день
 
 ```bash
-cp .env.example .env               # ключи
-docker compose up --build          # web :8000 + worker + redis
-docker compose --profile bot up    # + телеграм-бот
-docker compose --profile local up  # + ollama для локальных моделей
+pdftransl translate статья.pdf                          # перевод с дефолтами
+pdftransl translate статья.pdf --formats docx,pdf,latex # нужные форматы
+pdftransl translate статья.pdf --bilingual              # + документ для вычитки
+pdftransl translate статья.pdf --provider ollama --fallback openrouter
+pdftransl translate статья.pdf --rpm 15                 # щадим бесплатный тариф
+pdftransl translate статья.pdf --score --render-check   # параноидальный режим
+pdftransl glossary add "attention head" "головка внимания"
+pdftransl tm stats && pdftransl tm export dataset.jsonl
+pdftransl engines                                       # что умеет экспорт здесь
 ```
 
-## Результат работы
+Все опции доступны и из Python: `TranslationService` /
+`TranslationPipeline` (`submit → process → status` для интеграции в свой
+бэкенд — см. `pdftransl/service.py`, там докстринг с примером).
 
-```
-data/output/<имя>/
-├── <имя>.md                  # распарсенный оригинал
-├── <имя>.ru.md               # перевод (Markdown)
-├── <имя>.ru.html             # HTML с KaTeX
-├── <имя>.ru.docx             # DOCX (pandoc: нативные формулы)
-├── <имя>.ru.pdf              # PDF (pandoc/Chromium/weasyprint)
-├── <имя>.ru.bilingual.md     # двуязычный (опция)
-├── assets/                    # картинки и графики
-├── figures.json               # VLM-описания рисунков (опция)
-└── report.json                # QA-отчёт
-```
+## Частые вопросы
 
-## Конфигурация
+**Формулы в DOCX/PDF — картинки или текст?** С pandoc — нативные
+формулы Word (OMML) и настоящая LaTeX-вёрстка в PDF. Без pandoc DOCX
+собирается через python-docx (формулы остаются LaTeX-текстом), PDF —
+печатью HTML через Chromium (формулы рендерит KaTeX, нужен интернет для
+CDN). `pdftransl engines` покажет, что доступно; `brew install pandoc`
+решает.
 
-Всё управляется `PipelineConfig` / переменными окружения (полный список
-в `.env.example`): провайдер и модель, fallback-цепочка, число
-параллельных воркеров, форматы экспорта, RAG/ревью/обучение,
-двуязычный режим, кэш парсинга, домен TM.
+**Насколько это бесплатно?** Полностью локальный вариант (Ollama +
+PyMuPDF/MinerU) не стоит ничего. Облачные модели — по их тарифам, причём
+память переводов заметно экономит: повторные и похожие куски не
+переводятся заново.
+
+**Какой парсер выбрать?** MinerU — лучший для формул, но тяжёлый.
+marker — быстрее и легче, тоже умеет LaTeX. Docling — хорош на таблицах.
+PyMuPDF — мгновенный, но формулы не распознаёт (текстовые статьи — ок).
+`--backend auto` сам возьмёт лучший из установленных.
+
+**Перевод так себе, что подкрутить?** (1) модель побольше; (2) правьте
+сегменты в вычитке — правки учат систему; (3) наполните глоссарий своей
+терминологией; (4) включите `--score`, чтобы найти слабые места;
+(5) накопили TM — дообучите модель ([docs/FINETUNING.md](docs/FINETUNING.md)).
 
 ## Документация
 
-- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — стадии пайплайна, модули, точки расширения.
-- [`docs/IMPROVEMENTS.md`](docs/IMPROVEMENTS.md) — что уже реализовано из роадмапа и что дальше.
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — как устроен пайплайн и где расширять
+- [docs/OLLAMA.md](docs/OLLAMA.md) — локальные модели: установка, выбор, грабли
+- [docs/FINETUNING.md](docs/FINETUNING.md) — LoRA на вашей памяти переводов
+- [docs/IMPROVEMENTS.md](docs/IMPROVEMENTS.md) — что уже сделано и что в планах
 
 ## Тесты
 
 ```bash
-python -m pytest tests/ -q     # офлайн, без сети и ключей (60+ тестов)
+python -m pytest tests/ -q    # 64 теста, офлайн, без ключей
 ```

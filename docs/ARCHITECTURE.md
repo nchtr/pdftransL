@@ -1,5 +1,9 @@
 # Архитектура pdftransl
 
+Этот документ — карта проекта: что за чем выполняется и где что лежит.
+Если вы хотите добавить свой парсер, провайдера или формат экспорта —
+таблица точек расширения в конце покажет, какой интерфейс реализовать.
+
 ## Общая схема
 
 ```
@@ -36,8 +40,9 @@
 
 ## Стадии пайплайна
 
-1. **parse** — `parsing/`: MinerU (локальный CLI / облачный API) или
-   PyMuPDF-фолбэк; картинки экспортируются в `Asset`; результат
+1. **parse** — `parsing/`: MinerU (локальный CLI / облачный API),
+   marker, Docling или PyMuPDF-фолбэк; auto-режим берёт лучший из
+   установленных. Картинки экспортируются в `Asset`; результат
    кэшируется по SHA-256 содержимого PDF (`parsing/cache.py`) — повторная
    загрузка того же файла не тратит GPU/API.
 2. **split + references** — `parsing/splitter.py` разбивает Markdown на
@@ -63,33 +68,40 @@
    сегмента-источника) — это разглаживает швы и остаётся
    параллельно-безопасным. Клиент — единый интерфейс `BaseLLMClient`;
    `FallbackClient` перебирает цепочку провайдеров при сбоях
-   (`fallback_providers`). После ответа: анмаскинг → валидаторы →
-   ограниченный цикл исправлений с фидбеком модели.
-7. **review** — `quality/reviewer.py`: LLM-ревьюер перепроверяет
-   проблемные сегменты (JSON-вердикт), ревизия принимается только если
-   не ломает плейсхолдеры.
-8. **backtranslation (опция)** — `quality/backtranslation.py`: обратный
+   (`fallback_providers`), общий `RateLimiter` (`rpm_limit`) держит
+   бюджет запросов/минуту на всю цепочку. После ответа: анмаскинг →
+   валидаторы → ограниченный цикл исправлений с фидбеком модели.
+7. **scoring (опция)** — `quality/scoring.py`: LLM-судья ставит каждому
+   сегменту оценку 0–100; ниже порога — сегмент помечается и уходит на
+   ревью; сводка в отчёте.
+8. **review** — `quality/reviewer.py`: LLM-ревьюер перепроверяет
+   проблемные сегменты (JSON-вердикт; при `structured_outputs` — честный
+   JSON-mode), ревизия принимается только если не ломает плейсхолдеры.
+9. **backtranslation (опция)** — `quality/backtranslation.py`: обратный
    перевод + косинус эмбеддингов оригинала и обратного перевода; низкая
    близость — предупреждение о потере смысла.
-9. **assemble** — сборка Markdown в исходном порядке; при
-   `bilingual=True` дополнительно собирается документ
-   «цитата-оригинал → перевод» для вычитки.
-10. **latex check** — `quality/latex_check.py`: чисто-питоновская
-    проверка формул итогового документа (балансы скобок, `\begin/\end`,
-    `$$`); проблемы попадают в отчёт.
+10. **assemble + latex fix** — сборка Markdown в исходном порядке;
+    `quality/latex_check.py` находит синтаксически битые формулы, а
+    `quality/latex_fix.py` просит LLM их починить — правка принимается
+    только если проходит ту же проверку. При `bilingual=True`
+    дополнительно собирается документ «цитата-оригинал → перевод».
 11. **export** — `export/exporter.py`, движки по убыванию качества:
     - **DOCX**: pandoc (LaTeX → нативные формулы Word/OMML) →
       python-docx (структура/таблицы/картинки, формулы текстом);
     - **PDF**: pandoc+xelatex → headless Chromium печать нашего
       KaTeX-HTML (`PDFTRANSL_CHROMIUM` — свой бинарь) → weasyprint;
     - **HTML**: собственный конвертер + KaTeX, картинки инлайнятся
-      data-URI — файл полностью автономен.
+      data-URI — файл полностью автономен;
+    - **LaTeX**: `export/latex.py` — компилируемый .tex проект.
     Недоступность движка не роняет пайплайн: в отчёте
-    `export_engines` указана причина.
+    `export_engines` указана причина. При `render_check=True` итоговый
+    HTML открывается в headless Chromium и ошибки KaTeX-рендера
+    попадают в отчёт (`quality/render_check.py`).
 12. **learn** — успешные пары уходят в TM (`origin=auto`, доменный тег);
-    правки человека (`origin=human`) вытесняют автоматические.
+    правки человека (`origin=human`) вытесняют автоматические, а
+    короткие правки-термины дополнительно пополняют глоссарий.
 13. **report** — `report.json`: статистика, проблемные сегменты,
-    LaTeX-issues, использованные экспорт-движки, авто-глоссарий.
+    LaTeX-issues и починки, оценки судьи, экспорт-движки, авто-глоссарий.
 
 ## Django-бэкенд (`backend/`)
 
@@ -101,8 +113,12 @@
   `rebuild_outputs()` пересобирает MD/HTML/DOCX/PDF с учётом правок.
 - `api.tasks.dispatch_job` — Celery при `USE_CELERY=1`, иначе фоновый
   поток (дев-режим без брокера).
-- REST-эндпоинты без DRF (см. `api/urls.py`); React SPA раздаётся
-  catch-all-вьюхой из `frontend/dist`.
+- REST-эндпоинты без DRF (см. `api/urls.py`); прогресс — SSE-стрим
+  `/api/jobs/<id>/events/` (поллинг остаётся фолбэком); React SPA
+  раздаётся catch-all-вьюхой из `frontend/dist`.
+- Защита: опциональный Bearer-токен на весь `/api/`
+  (`PDFTRANSL_API_TOKEN`) и per-IP лимит загрузок
+  (`PDFTRANSL_UPLOADS_PER_HOUR`).
 
 ## Telegram-бот (`bot/`)
 
@@ -116,8 +132,8 @@ aiogram v3, long polling. Приём PDF → прогресс редактиро
 
 | Интерфейс | Файл | Реализации | Как расширить |
 |---|---|---|---|
-| `ParserBackend` | `parsing/base.py` | MinerU local/API, PyMuPDF | marker, Nougat, Docling, GROBID |
+| `ParserBackend` | `parsing/base.py` | MinerU local/API, marker, Docling, PyMuPDF | Nougat, GROBID |
 | `BaseLLMClient` | `llm/base.py` | OpenAI-compat, Anthropic, Fallback, Fake | любой API |
 | `BaseEmbedder` | `rag/embeddings.py` | hashing, sentence-transformers, API | — |
-| экспорт-движок | `export/exporter.py` | pandoc, python-docx, chromium, weasyprint | typst, LibreOffice |
-| хранилище TM | `rag/store.py` | SQLite + cosine | pgvector, Qdrant, sqlite-vec |
+| экспорт-движок | `export/exporter.py` | pandoc, python-docx, chromium, weasyprint, latex | typst, LibreOffice |
+| хранилище TM | `rag/store.py` | SQLite + cosine (numpy fast-path) | pgvector, Qdrant, sqlite-vec |

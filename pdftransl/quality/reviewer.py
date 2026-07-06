@@ -42,6 +42,9 @@ class Reviewer:
             source=segment.masked_text or segment.source_text,
             translation=segment.translation,
         )
+        response_format = (
+            {"type": "json_object"} if self.config.structured_outputs else None
+        )
         try:
             raw = self.client.chat(
                 [
@@ -49,6 +52,7 @@ class Reviewer:
                     {"role": "user", "content": user},
                 ],
                 temperature=0.0,
+                response_format=response_format,
             )
         except Exception as exc:  # review must never break the pipeline
             logger.warning("Review failed for %s: %s", segment.id, exc)

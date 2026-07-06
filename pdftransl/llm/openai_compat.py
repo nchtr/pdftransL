@@ -23,10 +23,11 @@ _RETRIABLE = {429, 500, 502, 503, 504}
 
 
 class OpenAICompatClient(BaseLLMClient):
-    def __init__(self, config: ProviderConfig):
+    def __init__(self, config: ProviderConfig, rate_limiter=None):
         self.config = config
         self.model = config.model
         self.supports_vision = config.supports_vision
+        self.rate_limiter = rate_limiter
         key = config.resolve_api_key()
         if not key and not config.is_local:
             raise LLMError(
@@ -43,6 +44,7 @@ class OpenAICompatClient(BaseLLMClient):
         messages: list[Message],
         temperature: float = 0.2,
         max_tokens: Optional[int] = None,
+        response_format: Optional[dict] = None,
     ) -> str:
         payload: dict = {
             "model": self.model,
@@ -51,6 +53,8 @@ class OpenAICompatClient(BaseLLMClient):
         }
         if max_tokens:
             payload["max_tokens"] = max_tokens
+        if response_format:
+            payload["response_format"] = response_format
 
         url = f"{self.config.base_url.rstrip('/')}/chat/completions"
         last_error: Optional[str] = None
@@ -59,6 +63,8 @@ class OpenAICompatClient(BaseLLMClient):
                 delay = min(2 ** attempt, 30)
                 logger.warning("LLM retry %d in %ds (%s)", attempt, delay, last_error)
                 time.sleep(delay)
+            if self.rate_limiter is not None:
+                self.rate_limiter.wait()
             try:
                 resp = requests.post(
                     url, json=payload, headers=self._headers,

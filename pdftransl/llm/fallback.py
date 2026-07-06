@@ -30,11 +30,15 @@ class FallbackClient(BaseLLMClient):
         messages: list[Message],
         temperature: float = 0.2,
         max_tokens: Optional[int] = None,
+        response_format: Optional[dict] = None,
     ) -> str:
         last_exc: Optional[Exception] = None
         for client in self.clients:
             try:
-                return client.chat(messages, temperature=temperature, max_tokens=max_tokens)
+                return client.chat(
+                    messages, temperature=temperature,
+                    max_tokens=max_tokens, response_format=response_format,
+                )
             except LLMError as exc:
                 logger.warning(
                     "Provider %s failed (%s); falling back to next provider",

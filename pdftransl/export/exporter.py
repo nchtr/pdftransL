@@ -99,7 +99,9 @@ def _weasyprint_pdf(html_text: str, output_path: Path, base_url: str) -> bool:
 
 def available_engines() -> dict[str, list[str]]:
     """Which export engines can run in this environment (for the UI)."""
-    engines: dict[str, list[str]] = {"html": ["builtin"], "docx": [], "pdf": []}
+    engines: dict[str, list[str]] = {
+        "html": ["builtin"], "latex": ["builtin"], "docx": [], "pdf": [],
+    }
     if _pandoc_path():
         engines["docx"].append("pandoc")
         engines["pdf"].append("pandoc")
@@ -148,6 +150,14 @@ def export_document(
     if "html" in formats:
         files["html"] = str(html_path)
         engines["html"] = "builtin"
+
+    if "latex" in formats:
+        from pdftransl.export.latex import export_latex
+
+        tex_path = out_base.with_suffix(".tex")
+        export_latex(markdown, tex_path, title=title)
+        files["latex"] = str(tex_path)
+        engines["latex"] = "builtin"
 
     md_path = out_base.with_suffix(".export.md")
 

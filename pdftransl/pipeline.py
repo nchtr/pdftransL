@@ -44,7 +44,13 @@ StageCb = Callable[[str, float], None]  # (stage_name, progress 0..1)
 
 
 def _build_client(config: PipelineConfig) -> BaseLLMClient:
-    primary = create_client(config.provider_config())
+    # one shared limiter: the whole chain respects a single rpm budget
+    rate_limiter = None
+    if config.rpm_limit:
+        from pdftransl.llm.ratelimit import RateLimiter
+
+        rate_limiter = RateLimiter(config.rpm_limit)
+    primary = create_client(config.provider_config(), rate_limiter=rate_limiter)
     if not config.fallback_providers:
         return primary
     chain = [primary]
@@ -52,7 +58,9 @@ def _build_client(config: PipelineConfig) -> BaseLLMClient:
         if name == config.provider:
             continue
         try:
-            chain.append(create_client(get_provider_config(name)))
+            chain.append(
+                create_client(get_provider_config(name), rate_limiter=rate_limiter)
+            )
         except Exception as exc:
             logger.warning("Fallback provider %s unavailable: %s", name, exc)
     return FallbackClient(chain) if len(chain) > 1 else primary
@@ -205,19 +213,36 @@ class TranslationPipeline:
 
         self.translator.translate_segments(segments, progress=progress)
 
-        # 4. LLM review of flagged segments
+        # 4. optional LLM-judge quality scoring (flags weak segments)
+        quality_scores: dict = {}
+        if cfg.quality_score:
+            stage("scoring", 0.62)
+            from pdftransl.quality.scoring import score_segments
+
+            quality_scores = score_segments(segments, self.client, cfg)
+
+        # 5. LLM review of flagged segments
         if self.reviewer is not None:
             stage("review", 0.65)
             self.reviewer.review_segments(segments, only_flagged=True)
 
-        # 5. optional back-translation semantic check
+        # 6. optional back-translation semantic check
         if cfg.backtranslation_check:
             stage("backtranslation", 0.72)
             backtranslation_check(segments, self.client, self.embedder, cfg)
 
-        # 6. assemble output document (+ bilingual variant)
+        # 7. assemble; repair broken LaTeX before writing files
         stage("assemble", 0.78)
         translated_md = assemble([s.final_text() for s in segments])
+        latex_issues = latex_check(translated_md)
+        latex_fixes: list = []
+        if cfg.fix_latex and latex_issues:
+            stage("latex_fix", 0.8)
+            from pdftransl.quality.latex_fix import fix_document
+
+            translated_md, latex_fixes = fix_document(translated_md, self.client, cfg)
+            latex_issues = latex_check(translated_md)
+
         output_path = out_dir / output_name
         output_path.write_text(translated_md, encoding="utf-8")
         bilingual_path: Optional[Path] = None
@@ -225,9 +250,6 @@ class TranslationPipeline:
             bilingual_md = assemble(_bilingual_texts(segments))
             bilingual_path = output_path.with_suffix(".bilingual.md")
             bilingual_path.write_text(bilingual_md, encoding="utf-8")
-
-        # 7. LaTeX syntax check over the final document
-        latex_issues = latex_check(translated_md)
 
         # 8. export assets next to the translated markdown
         assets_dir: Optional[Path] = None
@@ -252,7 +274,7 @@ class TranslationPipeline:
                     output_json=out_dir / "figures.json",
                 )
 
-        # 10. export to HTML / DOCX / PDF
+        # 10. export to HTML / LaTeX / DOCX / PDF
         export_result = {"files": {}, "engines": {}}
         if cfg.export_formats:
             stage("export", 0.88)
@@ -264,6 +286,14 @@ class TranslationPipeline:
                 assets_dir=assets_dir,
                 title=title,
             )
+
+        # 10b. optional render check of the exported HTML (KaTeX errors)
+        render_issues: list = []
+        if cfg.render_check and export_result["files"].get("html"):
+            stage("render_check", 0.92)
+            from pdftransl.quality.render_check import check_rendered_html
+
+            render_issues = check_rendered_html(export_result["files"]["html"])
 
         # 11. learn: push good pairs into the translation memory
         if cfg.learn and self.tm is not None:
@@ -290,6 +320,12 @@ class TranslationPipeline:
         report["assets"] = [a.to_dict() for a in parsed.assets]
         report["references_blocks_kept"] = refs_skipped
         report["latex_issues"] = [i.to_dict() for i in latex_issues]
+        if latex_fixes:
+            report["latex_fixes"] = latex_fixes
+        if quality_scores:
+            report["quality_scores"] = quality_scores
+        if render_issues:
+            report["render_issues"] = [i.to_dict() for i in render_issues]
         report["export_engines"] = export_result["engines"]
         if bilingual_path is not None:
             report["bilingual_markdown"] = str(bilingual_path)

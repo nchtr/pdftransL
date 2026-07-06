@@ -44,7 +44,10 @@ def collect_assets(markdown_dir: Path, markdown: str) -> list[Asset]:
 
 def get_backend(config: PipelineConfig) -> ParserBackend:
     """Pick a parsing backend according to config ('auto' probes in order
-    of quality: local MinerU -> MinerU cloud API -> PyMuPDF fallback)."""
+    of scientific-PDF quality: local MinerU -> MinerU cloud API ->
+    marker -> docling -> PyMuPDF fallback)."""
+    from pdftransl.parsing.docling_backend import DoclingBackend
+    from pdftransl.parsing.marker_backend import MarkerBackend
     from pdftransl.parsing.mineru_api import MineruApiBackend
     from pdftransl.parsing.mineru_local import MineruLocalBackend
     from pdftransl.parsing.pymupdf_backend import PyMuPdfBackend
@@ -54,19 +57,23 @@ def get_backend(config: PipelineConfig) -> ParserBackend:
         for backend in (
             MineruLocalBackend(),
             MineruApiBackend(config),
+            MarkerBackend(),
+            DoclingBackend(),
             PyMuPdfBackend(),
         ):
             if backend.available():
                 return backend
         raise ParserUnavailableError(
             "No parsing backend available. Install MinerU (`pip install mineru`), "
-            "set MINERU_API_KEY for the cloud API, or install PyMuPDF "
-            "(`pip install PyMuPDF`) as a fallback."
+            "set MINERU_API_KEY for the cloud API, install marker-pdf/docling, "
+            "or install PyMuPDF (`pip install PyMuPDF`) as a fallback."
         )
 
     backends: dict[str, ParserBackend] = {
         "mineru_local": MineruLocalBackend(),
         "mineru_api": MineruApiBackend(config),
+        "marker": MarkerBackend(),
+        "docling": DoclingBackend(),
         "pymupdf": PyMuPdfBackend(),
     }
     if name not in backends:
