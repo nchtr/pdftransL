@@ -1,0 +1,23 @@
+# Core engine (always required)
+requests>=2.31
+python-dotenv>=1.0
+
+# --- Optional extras (or use `pip install -e ".[extra]"`) -----------
+# Scientific PDF parsing with formula->LaTeX recognition (recommended):
+# mineru[core]>=2.0
+# Lightweight parsing fallback (text + images only):
+PyMuPDF>=1.24
+# Neural embeddings for translation memory / RAG:
+# sentence-transformers>=3.0
+# DOCX / PDF export:
+python-docx>=1.1
+# playwright>=1.40        # Chromium-based PDF rendering
+# Django backend:
+Django>=4.2
+celery>=5.3
+redis>=5.0
+# gunicorn>=21.0
+# Telegram bot:
+aiogram>=3.4
+# Tests:
+pytest>=8.0

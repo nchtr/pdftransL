@@ -2,6 +2,14 @@
 venv/
 __pycache__/
 *.pyc
+*.egg-info/
+.pytest_cache/
+build/
+dist/
+
+# Databases
+*.db
+*.sqlite3
 
 # Secrets
 .env
@@ -11,8 +19,12 @@ __pycache__/
 *.log
 
 # Output files
-data/output/
-data/input/*.pdf
+data/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/package-lock.json
 
 # Hermes/local config
 .hermes/
