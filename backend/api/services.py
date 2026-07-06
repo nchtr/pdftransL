@@ -12,7 +12,9 @@ from pdftransl.export.exporter import export_document
 from pdftransl.parsing.splitter import assemble
 from pdftransl.pipeline import TranslationPipeline
 from pdftransl.rag.embeddings import get_embedder
+from pdftransl.rag.glossary import Glossary
 from pdftransl.rag.store import TranslationMemory
+from pdftransl.service import looks_like_term
 
 from .models import SegmentRecord, TranslationJob
 
@@ -34,7 +36,8 @@ def build_config(job: TranslationJob) -> PipelineConfig:
     for key in (
         "review", "use_rag", "learn", "bilingual", "describe_figures",
         "backtranslation_check", "doc_summary", "auto_glossary",
-        "skip_references",
+        "skip_references", "quality_score", "fix_latex", "render_check",
+        "structured_outputs",
     ):
         if key in options:
             overrides[key] = bool(options[key])
@@ -42,6 +45,8 @@ def build_config(job: TranslationJob) -> PipelineConfig:
         overrides["export_formats"] = list(options["formats"])
     if options.get("max_workers"):
         overrides["max_workers"] = int(options["max_workers"])
+    if options.get("rpm_limit"):
+        overrides["rpm_limit"] = int(options["rpm_limit"])
     if options.get("fallback_providers"):
         overrides["fallback_providers"] = list(options["fallback_providers"])
     if options.get("domain"):
@@ -121,6 +126,13 @@ def save_correction(job: TranslationJob, order: int, corrected: str) -> SegmentR
         origin="human", doc_id=str(job.pk),
         domain=(job.options or {}).get("domain", ""),
     )
+    # term-sized corrections also grow the glossary
+    if looks_like_term(segment.source_text) and looks_like_term(segment.corrected):
+        Glossary(config.db_path).add(
+            segment.source_text.strip(), segment.corrected.strip(),
+            job.source_lang, job.target_lang,
+            notes=f"from correction in job {job.pk}",
+        )
     return segment
 
 

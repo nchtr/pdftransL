@@ -54,7 +54,7 @@ def test_russian_references_heading():
 # --- fallback chain --------------------------------------------------------
 
 class FailingClient(FakeLLMClient):
-    def chat(self, messages, temperature=0.2, max_tokens=None):
+    def chat(self, messages, temperature=0.2, max_tokens=None, response_format=None):
         raise LLMError("simulated outage")
 
 

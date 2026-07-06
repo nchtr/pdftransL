@@ -36,6 +36,7 @@ MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "api.middleware.cors_middleware",
+    "api.middleware.token_auth_middleware",
     "django.middleware.common.CommonMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
@@ -93,6 +94,10 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 PDFTRANSL_DB = str(DATA_DIR / "pdftransl.db")
 PDFTRANSL_OUTPUT_DIR = str(DATA_DIR / "output")
 MAX_UPLOAD_MB = int(os.environ.get("PDFTRANSL_MAX_UPLOAD_MB", "50"))
+# optional bearer token protecting /api/ (empty = open, dev mode)
+PDFTRANSL_API_TOKEN = os.environ.get("PDFTRANSL_API_TOKEN", "")
+# per-IP upload throttle (uploads per hour)
+UPLOADS_PER_HOUR = int(os.environ.get("PDFTRANSL_UPLOADS_PER_HOUR", "20"))
 
 # --- task execution -------------------------------------------------------
 # USE_CELERY=1 -> celery worker (redis broker); default: background threads

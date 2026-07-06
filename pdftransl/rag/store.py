@@ -50,6 +50,28 @@ def _hash(text: str) -> str:
     return hashlib.sha256(text.strip().encode("utf-8")).hexdigest()
 
 
+def _batch_cosine(query: list[float], vectors: list[list[float]]) -> list[float]:
+    """Cosine of `query` against many vectors; numpy path when available
+    (worth it from a few thousand TM segments onward)."""
+    dim = len(query)
+    try:
+        import numpy as np
+
+        matrix = np.array(
+            [v if len(v) == dim else [0.0] * dim for v in vectors],
+            dtype=np.float32,
+        )
+        if not len(matrix):
+            return []
+        q = np.array(query, dtype=np.float32)
+        q_norm = np.linalg.norm(q) or 1.0
+        norms = np.linalg.norm(matrix, axis=1)
+        norms[norms == 0] = 1.0
+        return (matrix @ q / (norms * q_norm)).tolist()
+    except ImportError:
+        return [cosine(query, v) for v in vectors]
+
+
 class TranslationMemory:
     def __init__(self, db_path: str | Path, embedder: BaseEmbedder):
         self.db_path = str(db_path)
@@ -141,10 +163,13 @@ class TranslationMemory:
             params.append(domain)
         with self._connect() as conn:
             rows = conn.execute(sql, params).fetchall()
+        vectors = [
+            json.loads(row["embedding"]) if row["embedding"] else []
+            for row in rows
+        ]
+        similarities = _batch_cosine(query_vec, vectors)
         scored = []
-        for row in rows:
-            vec = json.loads(row["embedding"]) if row["embedding"] else []
-            sim = cosine(query_vec, vec)
+        for row, sim in zip(rows, similarities):
             if sim >= min_similarity:
                 scored.append({
                     "source": row["source"],

@@ -21,14 +21,17 @@ class FakeLLMClient(BaseLLMClient):
         self.responses = list(responses or [])
         self.transform = transform
         self.calls: list[list[Message]] = []
+        self.last_response_format: Optional[dict] = None
 
     def chat(
         self,
         messages: list[Message],
         temperature: float = 0.2,
         max_tokens: Optional[int] = None,
+        response_format: Optional[dict] = None,
     ) -> str:
         self.calls.append(messages)
+        self.last_response_format = response_format
         if self.responses:
             return self.responses.pop(0)
         last_user = next(

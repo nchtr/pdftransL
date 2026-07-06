@@ -50,6 +50,16 @@ def _add_common(parser: argparse.ArgumentParser) -> None:
                         help="enable the back-translation semantic check")
     parser.add_argument("--domain", default=None,
                         help="translation-memory domain tag (e.g. physics, ml)")
+    parser.add_argument("--score", action="store_true",
+                        help="LLM-judge quality score (0-100) per segment")
+    parser.add_argument("--render-check", action="store_true",
+                        help="render exported HTML and count KaTeX errors")
+    parser.add_argument("--no-fix-latex", action="store_true",
+                        help="do not LLM-repair broken formulas in the result")
+    parser.add_argument("--rpm", type=int, default=None,
+                        help="max LLM requests per minute (free-tier throttle)")
+    parser.add_argument("--structured", action="store_true",
+                        help="use JSON mode for review/glossary calls (OpenAI-compatible)")
 
 
 def _config_from_args(args: argparse.Namespace) -> PipelineConfig:
@@ -90,6 +100,16 @@ def _config_from_args(args: argparse.Namespace) -> PipelineConfig:
         overrides["backtranslation_check"] = True
     if args.domain:
         overrides["tm_domain"] = args.domain
+    if args.score:
+        overrides["quality_score"] = True
+    if args.render_check:
+        overrides["render_check"] = True
+    if args.no_fix_latex:
+        overrides["fix_latex"] = False
+    if args.rpm:
+        overrides["rpm_limit"] = args.rpm
+    if args.structured:
+        overrides["structured_outputs"] = True
     return PipelineConfig.from_env(**overrides)
 
 

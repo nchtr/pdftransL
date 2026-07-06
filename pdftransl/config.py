@@ -181,6 +181,15 @@ class PipelineConfig:
     # Extra quality checks
     backtranslation_check: bool = False  # embed(source) vs embed(back-translation)
     backtranslation_min_similarity: float = 0.5
+    quality_score: bool = False          # LLM-judge score per segment (0-100)
+    quality_score_threshold: float = 70.0  # below this -> flag for review
+    fix_latex: bool = True               # LLM-repair broken formulas in the result
+    max_latex_fixes: int = 10
+    render_check: bool = False           # render exported HTML, count KaTeX errors
+
+    # Provider behaviour
+    structured_outputs: bool = False     # ask for JSON mode where the task is JSON
+    rpm_limit: Optional[int] = None      # max requests/minute (free-tier throttle)
 
     # RAG / translation memory
     use_rag: bool = True
@@ -239,11 +248,17 @@ class PipelineConfig:
             ("PDFTRANSL_SKIP_REFERENCES", "skip_references"),
             ("PDFTRANSL_BILINGUAL", "bilingual"),
             ("PDFTRANSL_PARSE_CACHE", "parse_cache"),
+            ("PDFTRANSL_QUALITY_SCORE", "quality_score"),
+            ("PDFTRANSL_FIX_LATEX", "fix_latex"),
+            ("PDFTRANSL_RENDER_CHECK", "render_check"),
+            ("PDFTRANSL_STRUCTURED_OUTPUTS", "structured_outputs"),
         ):
             if env.get(flag) is not None:
                 kwargs[attr] = env[flag].strip().lower() in ("1", "true", "yes", "on")
         if env.get("PDFTRANSL_MAX_WORKERS"):
             kwargs["max_workers"] = int(env["PDFTRANSL_MAX_WORKERS"])
+        if env.get("PDFTRANSL_RPM"):
+            kwargs["rpm_limit"] = int(env["PDFTRANSL_RPM"])
         if env.get("PDFTRANSL_FALLBACK_PROVIDERS"):
             kwargs["fallback_providers"] = [
                 p.strip() for p in env["PDFTRANSL_FALLBACK_PROVIDERS"].split(",") if p.strip()

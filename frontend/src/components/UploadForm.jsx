@@ -16,6 +16,7 @@ export default function UploadForm({ meta, onSubmitted, onError }) {
     bilingual: false,
     describe_figures: false,
     skip_references: true,
+    quality_score: false,
   })
   const [busy, setBusy] = useState(false)
 
@@ -109,7 +110,7 @@ export default function UploadForm({ meta, onSubmitted, onError }) {
 
       <fieldset>
         <legend>Форматы результата (markdown — всегда)</legend>
-        {['html', 'docx', 'pdf'].map((fmt) => (
+        {['html', 'docx', 'pdf', 'latex'].map((fmt) => (
           <label key={fmt} className="inline">
             <input
               type="checkbox"
@@ -130,6 +131,7 @@ export default function UploadForm({ meta, onSubmitted, onError }) {
           ['bilingual', 'Двуязычный документ (оригинал + перевод)'],
           ['describe_figures', 'VLM-описания рисунков'],
           ['skip_references', 'Не переводить список литературы'],
+          ['quality_score', 'Оценка качества LLM-судьёй (0–100)'],
         ].map(([key, title]) => (
           <label key={key} className="inline">
             <input

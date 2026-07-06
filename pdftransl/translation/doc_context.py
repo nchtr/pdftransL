@@ -61,6 +61,9 @@ def extract_terms(
 ) -> list[dict[str, str]]:
     """LLM-extracted per-document term glossary."""
     excerpt = markdown[:max_chars]
+    response_format = (
+        {"type": "json_object"} if config.structured_outputs else None
+    )
     try:
         raw = client.chat(
             [
@@ -73,6 +76,7 @@ def extract_terms(
                 {"role": "user", "content": excerpt},
             ],
             temperature=0.0,
+            response_format=response_format,
         )
     except Exception as exc:
         logger.warning("Term extraction failed: %s", exc)

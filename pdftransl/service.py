@@ -36,6 +36,18 @@ from pdftransl.storage.repository import JobRepository
 logger = logging.getLogger(__name__)
 
 
+def looks_like_term(text: str) -> bool:
+    """Heuristic: short, single-line, few words, no sentence ending —
+    a corrected fragment like this is a terminology entry, not prose."""
+    text = text.strip()
+    return (
+        0 < len(text) <= 60
+        and "\n" not in text
+        and len(text.split()) <= 5
+        and not text.endswith((".", "!", "?"))
+    )
+
+
 class TranslationService:
     def __init__(
         self,
@@ -111,13 +123,16 @@ class TranslationService:
         target_lang: Optional[str] = None,
     ) -> None:
         """Store a human-corrected translation; it will override future
-        automatic translations of the same/similar text."""
-        self._tm().add(
-            source, corrected,
-            source_lang or self.config.source_lang,
-            target_lang or self.config.target_lang,
-            origin="human",
-        )
+        automatic translations of the same/similar text. Corrections
+        that look like a single term also grow the glossary."""
+        src_lang = source_lang or self.config.source_lang
+        tgt_lang = target_lang or self.config.target_lang
+        self._tm().add(source, corrected, src_lang, tgt_lang, origin="human")
+        if looks_like_term(source) and looks_like_term(corrected):
+            Glossary(self.config.db_path).add(
+                source.strip(), corrected.strip(), src_lang, tgt_lang,
+                notes="from human correction",
+            )
 
     def add_glossary_term(
         self,

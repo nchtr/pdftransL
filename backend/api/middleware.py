@@ -1,11 +1,11 @@
-"""Minimal CORS middleware for the React dev server.
+"""Small dependency-free middlewares: CORS and optional token auth.
 
-Kept dependency-free on purpose; swap for django-cors-headers if you
-need credentials/preflight caching etc.
+Swap for django-cors-headers / DRF auth when the project grows —
+these cover the starter use-cases without extra packages.
 """
 
 from django.conf import settings
-from django.http import HttpResponse
+from django.http import HttpResponse, JsonResponse
 
 
 def cors_middleware(get_response):
@@ -20,7 +20,34 @@ def cors_middleware(get_response):
         if origin in allowed:
             response["Access-Control-Allow-Origin"] = origin
             response["Access-Control-Allow-Methods"] = "GET, POST, DELETE, OPTIONS"
-            response["Access-Control-Allow-Headers"] = "Content-Type, X-Requested-With"
+            response["Access-Control-Allow-Headers"] = (
+                "Content-Type, X-Requested-With, Authorization"
+            )
         return response
+
+    return middleware
+
+
+def token_auth_middleware(get_response):
+    """Optional bearer-token gate for the API.
+
+    Off by default (no PDFTRANSL_API_TOKEN set) — nothing changes for
+    local development. When the token is set, every /api/ request must
+    carry it: ``Authorization: Bearer <token>`` or ``?token=<token>``.
+    """
+
+    def middleware(request):
+        token = settings.PDFTRANSL_API_TOKEN
+        if token and request.path.startswith("/api/"):
+            supplied = ""
+            auth = request.headers.get("Authorization", "")
+            if auth.startswith("Bearer "):
+                supplied = auth[7:]
+            supplied = supplied or request.GET.get("token", "")
+            if supplied != token:
+                return JsonResponse(
+                    {"error": "invalid or missing API token"}, status=401
+                )
+        return get_response(request)
 
     return middleware

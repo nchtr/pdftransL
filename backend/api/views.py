@@ -7,10 +7,18 @@ auth (session/token) before exposing publicly.
 from __future__ import annotations
 
 import json
+import time
+from collections import defaultdict, deque
 from pathlib import Path
 
 from django.conf import settings
-from django.http import FileResponse, Http404, HttpResponse, JsonResponse
+from django.http import (
+    FileResponse,
+    Http404,
+    HttpResponse,
+    JsonResponse,
+    StreamingHttpResponse,
+)
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 
@@ -29,6 +37,7 @@ _CONTENT_TYPES = {
     "md": "text/markdown; charset=utf-8",
     "bilingual": "text/markdown; charset=utf-8",
     "html": "text/html; charset=utf-8",
+    "latex": "application/x-tex; charset=utf-8",
     "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     "pdf": "application/pdf",
     "report": "application/json",
@@ -50,6 +59,20 @@ def _engine_config() -> PipelineConfig:
 
 # --- jobs -------------------------------------------------------------
 
+# per-IP upload timestamps for the throttle (in-memory: per process)
+_upload_log: dict[str, deque] = defaultdict(deque)
+
+
+def _upload_allowed(ip: str) -> bool:
+    now = time.time()
+    log = _upload_log[ip]
+    while log and now - log[0] > 3600:
+        log.popleft()
+    if len(log) >= settings.UPLOADS_PER_HOUR:
+        return False
+    log.append(now)
+    return True
+
 
 @csrf_exempt
 @require_http_methods(["GET", "POST"])
@@ -57,6 +80,14 @@ def jobs(request):
     if request.method == "GET":
         items = [j.as_dict() for j in TranslationJob.objects.all()[:100]]
         return JsonResponse({"jobs": items})
+
+    ip = request.META.get("REMOTE_ADDR", "?")
+    if not _upload_allowed(ip):
+        return JsonResponse(
+            {"error": f"upload limit reached ({settings.UPLOADS_PER_HOUR}/hour); "
+                      "try again later"},
+            status=429,
+        )
 
     pdf = request.FILES.get("file")
     if pdf is None:
@@ -94,6 +125,42 @@ def jobs(request):
 @require_GET
 def job_detail(request, job_id):
     return JsonResponse(_job_or_404(job_id).as_dict())
+
+
+@require_GET
+def job_events(request, job_id):
+    """Server-Sent Events stream of job progress.
+
+    Emits a `data:` line whenever status/stage/progress changes and
+    closes on a terminal status. Frontends may use EventSource here
+    instead of polling; polling keeps working either way.
+    """
+    _job_or_404(job_id)  # 404 early, before we start streaming
+    terminal = {"completed", "partial", "failed"}
+
+    def stream():
+        last = None
+        for _ in range(1800):  # safety cap: ~30 min
+            try:
+                job = TranslationJob.objects.get(pk=job_id)
+            except TranslationJob.DoesNotExist:
+                break
+            payload = json.dumps({
+                "status": job.status,
+                "stage": job.stage,
+                "progress": job.progress,
+            })
+            if payload != last:
+                last = payload
+                yield f"data: {payload}\n\n"
+            if job.status in terminal:
+                break
+            time.sleep(1)
+
+    response = StreamingHttpResponse(stream(), content_type="text/event-stream")
+    response["Cache-Control"] = "no-cache"
+    response["X-Accel-Buffering"] = "no"
+    return response
 
 
 @require_GET

@@ -7,6 +7,7 @@ const FORMAT_TITLES = {
   html: 'HTML',
   docx: 'DOCX',
   pdf: 'PDF',
+  latex: 'LaTeX (.tex)',
   bilingual: 'Двуязычный MD',
   report: 'QA-отчёт (JSON)',
 }
@@ -24,11 +25,33 @@ export default function JobDetail({ jobId, onClose, onError }) {
     refresh()
   }, [refresh])
 
+  // live progress: SSE stream with polling as a fallback
   useEffect(() => {
     if (!job || (job.status !== 'running' && job.status !== 'queued')) return undefined
-    const timer = setInterval(refresh, 2000)
-    return () => clearInterval(timer)
-  }, [job, refresh])
+    let timer = null
+    let source = null
+    if (typeof EventSource !== 'undefined') {
+      source = new EventSource(`/api/jobs/${jobId}/events/`)
+      source.onmessage = (event) => {
+        const data = JSON.parse(event.data)
+        setJob((prev) => (prev ? { ...prev, ...data } : prev))
+        if (['completed', 'partial', 'failed'].includes(data.status)) {
+          source.close()
+          refresh() // pull the full record with report and formats
+        }
+      }
+      source.onerror = () => {
+        source.close()
+        timer = setInterval(refresh, 2000)
+      }
+    } else {
+      timer = setInterval(refresh, 2000)
+    }
+    return () => {
+      if (source) source.close()
+      if (timer) clearInterval(timer)
+    }
+  }, [job?.status, jobId, refresh])
 
   const rebuild = async () => {
     setRebuilding(true)

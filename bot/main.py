@@ -38,7 +38,7 @@ router = Router()
 store = SettingsStore(DATA_DIR / "bot_settings.json")
 
 _LANG_CHOICES = ["ru", "en", "de", "fr", "es", "zh", "uk"]
-_FORMAT_CHOICES = ["docx", "pdf", "html"]
+_FORMAT_CHOICES = ["docx", "pdf", "html", "latex"]
 
 HELP = (
     "<b>pdftransl</b> — перевод научных PDF с сохранением формул, таблиц и рисунков.\n\n"
