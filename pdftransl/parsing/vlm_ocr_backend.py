@@ -18,7 +18,7 @@ from typing import Optional
 
 from pdftransl.config import PipelineConfig
 from pdftransl.exceptions import ParserError, ParserUnavailableError
-from pdftransl.llm.base import BaseLLMClient, image_content, text_content
+from pdftransl.llm.base import BaseLLMClient, vision_message
 from pdftransl.models import Asset, ParsedDocument
 from pdftransl.parsing.base import ParserBackend
 
@@ -49,6 +49,23 @@ class VlmOcrBackend(ParserBackend):
 
             self._client = create_client(self.config.vision_provider_config())
         return self._client
+
+    def _transcribe_page(self, client: BaseLLMClient, img_path, page_no: int) -> str:
+        """One page → Markdown; one retry, then a visible placeholder."""
+        messages = [
+            {"role": "system", "content": _OCR_SYSTEM},
+            vision_message("Transcribe this page.", img_path),
+        ]
+        last_exc = None
+        for attempt in range(2):
+            try:
+                return client.chat(messages, temperature=0.0)
+            except Exception as exc:  # noqa: BLE001 - keep OCR going per page
+                last_exc = exc
+                logger.warning("VLM OCR page %d attempt %d failed: %s",
+                               page_no, attempt + 1, exc)
+        logger.error("VLM OCR gave up on page %d: %s", page_no, last_exc)
+        return f"<!-- OCR failed for page {page_no}: {last_exc} -->"
 
     def available(self) -> bool:
         try:
@@ -102,20 +119,7 @@ class VlmOcrBackend(ParserBackend):
                                 rel_path=f"pages/{img_path.name}",
                                 kind="page", page=page_no + 1))
             logger.info("VLM OCR: page %d/%d", page_no + 1, page_count)
-            try:
-                text = client.chat(
-                    [
-                        {"role": "system", "content": _OCR_SYSTEM},
-                        {"role": "user", "content": [
-                            text_content("Transcribe this page."),
-                            image_content(img_path),
-                        ]},
-                    ],
-                    temperature=0.0,
-                )
-            except Exception as exc:
-                logger.error("VLM OCR failed on page %d: %s", page_no + 1, exc)
-                text = f"<!-- OCR failed for page {page_no + 1}: {exc} -->"
+            text = self._transcribe_page(client, img_path, page_no + 1)
             parts.append(_strip_fence(text.strip()))
         doc.close()
 

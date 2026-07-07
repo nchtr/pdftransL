@@ -90,6 +90,8 @@ class TranslationPipeline:
             self.retriever = None
         self.translator = Translator(self.client, self.config, self.retriever)
         self.reviewer = Reviewer(self.client, self.config) if self.config.review else None
+        self._vision_client_cached: Optional[BaseLLMClient] = None
+        self._vision_client_built = False
 
     # ------------------------------------------------------------------
     def run(
@@ -305,13 +307,19 @@ class TranslationPipeline:
                         shutil.copy2(src, dst)
 
         # 9. optional VLM figure descriptions
+        figure_descriptions: dict = {}
         if cfg.describe_figures and parsed.assets:
             stage("figures", 0.82)
             vision_client = self._vision_client()
             if vision_client is not None:
-                describe_figures(
+                figure_descriptions = describe_figures(
                     parsed.assets, vision_client, cfg,
                     output_json=out_dir / "figures.json",
+                )
+            else:
+                figure_descriptions = {}
+                logger.warning(
+                    "describe_figures requested but no vision provider available"
                 )
 
         # 10. export to HTML / LaTeX / DOCX / PDF
@@ -366,6 +374,8 @@ class TranslationPipeline:
             report["scan_warning"] = parsed.meta["scan_warning"]
         if parsed.meta.get("ocr"):
             report["ocr"] = {"pages_transcribed": parsed.meta.get("pages_transcribed")}
+        if figure_descriptions:
+            report["figures_described"] = len(figure_descriptions)
         if latex_fixes:
             report["latex_fixes"] = latex_fixes
         if quality_scores:
@@ -390,13 +400,21 @@ class TranslationPipeline:
         )
 
     def _vision_client(self) -> Optional[BaseLLMClient]:
+        """A vision-capable client (built once, reused for OCR + figures)."""
+        if self._vision_client_built:
+            return self._vision_client_cached
+        self._vision_client_built = True
         if self.client.supports_vision and not self.config.vision_provider:
-            return self.client
-        try:
-            return create_client(self.config.vision_provider_config())
-        except Exception as exc:
-            logger.warning("Vision client unavailable: %s", exc)
-            return None
+            self._vision_client_cached = self.client
+        else:
+            try:
+                self._vision_client_cached = create_client(
+                    self.config.vision_provider_config()
+                )
+            except Exception as exc:
+                logger.warning("Vision client unavailable: %s", exc)
+                self._vision_client_cached = None
+        return self._vision_client_cached
 
 
 def _bilingual_texts(segments) -> list[str]:

@@ -215,8 +215,9 @@ class PipelineConfig:
 
     # Output
     bilingual: bool = False             # alternate source/translation paragraphs
-    export_formats: list[str] = field(default_factory=lambda: ["html"])
-    # any of: "html", "docx", "pdf" (md is always produced)
+    export_formats: list[str] = field(default_factory=lambda: ["html", "docx", "pdf"])
+    # any of: "html", "docx", "pdf", "latex" (md is always produced); a format
+    # whose engine is missing is reported in the QA report, not silently dropped
 
     # Storage
     db_path: str = "data/pdftransl.db"

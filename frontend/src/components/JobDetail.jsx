@@ -117,6 +117,15 @@ export default function JobDetail({ jobId, onClose, onError }) {
         </div>
       )}
 
+      {report.export_engines &&
+        Object.entries(report.export_engines)
+          .filter(([, v]) => typeof v === 'string' && v.startsWith('unavailable'))
+          .map(([fmt, reason]) => (
+            <p key={fmt} className="warn-text">
+              ⚠ {(FORMAT_TITLES[fmt] || fmt)} не собран — {reason.replace('unavailable: ', '')}
+            </p>
+          ))}
+
       {(job.status === 'completed' || job.status === 'partial') && (
         <div className="actions">
           <button onClick={() => setShowReview((v) => !v)}>

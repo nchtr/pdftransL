@@ -94,7 +94,28 @@ elif command -v brew >/dev/null 2>&1; then
   fi
 else
   warn "pandoc не найден. Без него DOCX собирается через python-docx (формулы"
-  warn "останутся текстом). Установка: https://pandoc.org/installing.html"
+  warn "рендерятся картинками). Установка: https://pandoc.org/installing.html"
+fi
+
+# ---------- браузер для экспорта в PDF --------------------------------------
+# Playwright ставит пакет, но НЕ сам браузер — без него PDF не соберётся
+# (это и был баг «PDF в списке есть, а файла нет»). Скачиваем Chromium.
+if python -c "import playwright" 2>/dev/null; then
+  if python -c "
+import sys
+from pathlib import Path
+from playwright.sync_api import sync_playwright
+with sync_playwright() as p:
+    exe = p.chromium.executable_path
+sys.exit(0 if exe and Path(exe).exists() else 1)
+" 2>/dev/null; then
+    say "Chromium для PDF-экспорта уже установлен"
+  elif ask "Скачать Chromium для экспорта в PDF? (~150 МБ, формулы в PDF)"; then
+    python -m playwright install chromium && say "Chromium установлен" \
+      || warn "Не удалось скачать Chromium — PDF будет недоступен (docx/html работают)"
+  else
+    note "Без Chromium PDF-экспорт недоступен. Позже: python -m playwright install chromium"
+  fi
 fi
 
 # ---------- фронтенд ----------------------------------------------------------

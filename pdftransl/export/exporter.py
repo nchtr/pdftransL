@@ -16,6 +16,7 @@ exactly what was produced and how.
 
 from __future__ import annotations
 
+import functools
 import logging
 import shutil
 import subprocess
@@ -54,6 +55,40 @@ def _pandoc_export(
         return False
 
 
+@functools.lru_cache(maxsize=1)
+def _playwright_chromium_path() -> Optional[str]:
+    """Playwright's downloaded Chromium path, if the binary exists.
+
+    Cached because launching the playwright driver just to read this is
+    expensive and the answer is stable within a process.
+    """
+    try:
+        from playwright.sync_api import sync_playwright
+
+        with sync_playwright() as p:
+            exe = p.chromium.executable_path
+        return exe if exe and Path(exe).exists() else None
+    except Exception:
+        return None
+
+
+def chromium_executable() -> Optional[str]:
+    """Path to a usable Chromium binary, or None.
+
+    Prefers ``PDFTRANSL_CHROMIUM``; otherwise checks that playwright's
+    own downloaded browser actually exists on disk (its
+    ``executable_path`` is reported even when the browser was never
+    installed — the source of the "engine claims chromium but export
+    fails" bug).
+    """
+    import os
+
+    override = os.environ.get("PDFTRANSL_CHROMIUM")
+    if override and Path(override).exists():
+        return override
+    return _playwright_chromium_path()
+
+
 def _chromium_pdf(html_path: Path, output_path: Path) -> bool:
     """Print the KaTeX HTML to PDF with headless Chromium (playwright).
 
@@ -64,13 +99,13 @@ def _chromium_pdf(html_path: Path, output_path: Path) -> bool:
         from playwright.sync_api import sync_playwright
     except ImportError:
         return False
-    import os
 
-    executable = os.environ.get("PDFTRANSL_CHROMIUM")
-    launch_kwargs = {"executable_path": executable} if executable else {}
+    executable = chromium_executable()
+    if executable is None:  # no usable browser — don't attempt a noisy launch
+        return False
     try:
         with sync_playwright() as p:
-            browser = p.chromium.launch(**launch_kwargs)
+            browser = p.chromium.launch(executable_path=executable)
             page = browser.new_page()
             page.goto(html_path.resolve().as_uri())
             page.wait_for_load_state("networkidle")
@@ -110,9 +145,12 @@ def available_engines() -> dict[str, list[str]]:
         engines["docx"].append("python-docx")
     except ImportError:
         pass
+    # only report chromium when playwright AND a real browser binary exist
     try:
-        from playwright.sync_api import sync_playwright  # noqa: F401
-        engines["pdf"].append("chromium")
+        import playwright.sync_api  # noqa: F401
+
+        if chromium_executable() is not None:
+            engines["pdf"].append("chromium")
     except ImportError:
         pass
     try:
