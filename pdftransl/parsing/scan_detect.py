@@ -1,10 +1,18 @@
-"""Detect scanned / image-only PDFs.
+"""Detect PDFs a text extractor can't handle: scans and garbled fonts.
 
-A scanned page carries no extractable text layer — just a full-page
-image. Feeding such a file to a text extractor (PyMuPDF) silently
-yields an empty document, so the pipeline needs to notice this and
-route to OCR instead. Detection uses PyMuPDF; when it is unavailable
-we conservatively report "not scanned" so nothing breaks.
+Two failure modes need OCR instead of text extraction:
+
+- **Scanned / image-only** pages carry no text layer at all — a text
+  extractor yields an empty document.
+- **Garbled text layer** — the page renders fine but the embedded
+  fonts have no ToUnicode map, so extraction returns "кракозябры"
+  (Private Use Area glyphs, replacement chars, mojibake). Common in
+  Cyrillic scientific PDFs (Cyberleninka & co.). Formally there *is*
+  text, so scan detection alone misses it.
+
+Both are surfaced here so the pipeline can route to OCR. Detection
+uses PyMuPDF; without it we conservatively report "fine" so nothing
+breaks.
 """
 
 from __future__ import annotations
@@ -12,33 +20,40 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+from pdftransl.parsing.text_quality import text_quality
+
 logger = logging.getLogger(__name__)
 
 
 def scan_stats(pdf_path: str | Path) -> dict:
-    """Return per-document scan statistics.
+    """Return per-document extraction stats.
 
     Keys: ``pages``, ``text_chars``, ``chars_per_page``,
-    ``image_pages`` (pages whose text is negligible while an image
-    covers most of the page), ``is_scanned``.
+    ``image_pages``, ``is_scanned``, ``is_garbled``,
+    ``garbled_ratio``, ``needs_ocr`` (scanned OR garbled).
     """
     try:
         import fitz  # PyMuPDF
     except ImportError:
-        return {"pages": 0, "is_scanned": False, "reason": "pymupdf-missing"}
+        return {"pages": 0, "is_scanned": False, "is_garbled": False,
+                "needs_ocr": False, "reason": "pymupdf-missing"}
 
     try:
         doc = fitz.open(str(pdf_path))
     except Exception as exc:  # pragma: no cover - corrupt file
         logger.warning("scan detection could not open %s: %s", pdf_path, exc)
-        return {"pages": 0, "is_scanned": False, "reason": "open-failed"}
+        return {"pages": 0, "is_scanned": False, "is_garbled": False,
+                "needs_ocr": False, "reason": "open-failed"}
 
     pages = doc.page_count
     text_chars = 0
     image_pages = 0
+    text_parts: list[str] = []
     for page in doc:
         text = page.get_text("text").strip()
         text_chars += len(text)
+        if len(text_parts) < 10:  # sample the head for the quality check
+            text_parts.append(text)
         page_area = float(page.rect.width * page.rect.height) or 1.0
         image_area = 0.0
         for img in page.get_images(full=True):
@@ -52,19 +67,22 @@ def scan_stats(pdf_path: str | Path) -> dict:
     doc.close()
 
     chars_per_page = text_chars / pages if pages else 0
-    # Scanned if most pages are image-with-no-text, or the whole document
-    # has almost no extractable text while containing page-sized images.
     is_scanned = bool(
         pages > 0
         and (image_pages / pages >= 0.5)
         and chars_per_page < 100
     )
+    quality = text_quality("\n".join(text_parts))
+    is_garbled = quality["is_garbled"]
     return {
         "pages": pages,
         "text_chars": text_chars,
         "chars_per_page": round(chars_per_page, 1),
         "image_pages": image_pages,
         "is_scanned": is_scanned,
+        "is_garbled": is_garbled,
+        "garbled_ratio": quality["garbled_ratio"],
+        "needs_ocr": bool(is_scanned or is_garbled),
     }
 
 

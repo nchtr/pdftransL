@@ -86,6 +86,9 @@ export default function JobDetail({ jobId, onClose, onError }) {
       {report.scan_warning && (
         <p className="warn-text">⚠ {report.scan_warning}</p>
       )}
+      {report.language_warning && (
+        <p className="warn-text">⚠ {report.language_warning}</p>
+      )}
       {report.ocr && (
         <p className="muted">
           Распознано OCR-страниц: {report.ocr.pages_transcribed}

@@ -163,29 +163,32 @@ class TranslationPipeline:
         backend = get_backend(self.config)
         scan: dict = {}
 
-        # Scanned/image-only PDFs have no text layer; a text extractor
-        # would silently yield an empty document. Detect and route to OCR.
+        # A text extractor fails on two kinds of PDF: scanned (no text
+        # layer) and garbled (broken font encoding -> "кракозябры"). Both
+        # need OCR. Detect and route when a vision model is available.
         if self.config.ocr_on_scan and backend.name not in _OCR_BACKENDS:
             from pdftransl.parsing.scan_detect import scan_stats
             from pdftransl.parsing.vlm_ocr_backend import VlmOcrBackend
 
             scan = scan_stats(pdf_path)
-            if scan.get("is_scanned"):
+            if scan.get("needs_ocr"):
+                reason = "scanned" if scan.get("is_scanned") else "garbled text layer"
                 # Auto-route only to a genuinely vision-capable client, so we
                 # never send page images to a text-only model. For a local VLM
                 # (marked non-vision in presets) select --backend vlm_ocr.
                 vclient = self._vision_client()
                 if vclient is not None and getattr(vclient, "supports_vision", False):
                     logger.info(
-                        "Scanned PDF detected (%.0f chars/page); routing to VLM OCR",
-                        scan.get("chars_per_page", 0),
+                        "PDF needs OCR (%s, garbled_ratio=%.2f); routing to VLM OCR",
+                        reason, scan.get("garbled_ratio", 0),
                     )
                     backend = VlmOcrBackend(self.config, client=vclient)
                 else:
                     logger.warning(
-                        "Scanned PDF detected but no vision provider available for "
-                        "OCR — text and formulas will be missing. Set a vision "
-                        "provider, use MinerU, or pass --backend vlm_ocr."
+                        "PDF needs OCR (%s) but no vision provider is available — "
+                        "output will be unreliable. Set a vision provider "
+                        "(e.g. Ollama + qwen2.5-vl), install MinerU, or pass "
+                        "--backend vlm_ocr.", reason,
                     )
 
         cache = (
@@ -201,11 +204,21 @@ class TranslationPipeline:
         parsed = backend.parse(pdf_path, workdir)
         if scan:
             parsed.meta.setdefault("scan", scan)
-            if scan.get("is_scanned") and backend.name not in _OCR_BACKENDS:
+            if scan.get("needs_ocr") and backend.name not in _OCR_BACKENDS:
+                if scan.get("is_scanned"):
+                    detail = "appears to be scanned (no text layer)"
+                else:
+                    gr = scan.get("garbled_ratio", 0)
+                    pct = f" ({gr:.0%} unreadable glyphs)" if gr >= 0.05 else ""
+                    detail = (
+                        f"has a garbled text layer{pct} — the embedded fonts "
+                        "likely lack a Unicode map"
+                    )
                 parsed.meta["scan_warning"] = (
-                    "PDF appears to be scanned but was parsed without OCR; "
-                    "text and formulas are likely missing. Install a vision "
-                    "provider (e.g. Ollama qwen2.5-vl) or MinerU."
+                    f"PDF {detail}; extracted text is unreliable and the "
+                    "translation will be garbage. Enable OCR: set a vision "
+                    "provider (e.g. Ollama qwen2.5-vl), install MinerU, or "
+                    "pass --backend vlm_ocr."
                 )
         if cache is not None:
             try:
@@ -223,6 +236,12 @@ class TranslationPipeline:
         output_name: str,
     ) -> JobResult:
         cfg = self.config
+
+        # Sanity check: does the source text match the declared source
+        # language? Catches the common "forgot to flip RU<->EN" mistake.
+        from pdftransl.parsing.text_quality import language_mismatch
+
+        wrong_script = language_mismatch(parsed.markdown, cfg.source_lang)
 
         # 1. structural split; keep bibliography untranslated
         stage("split", 0.05)
@@ -372,6 +391,12 @@ class TranslationPipeline:
             report["scan"] = parsed.meta["scan"]
         if parsed.meta.get("scan_warning"):
             report["scan_warning"] = parsed.meta["scan_warning"]
+        if wrong_script:
+            report["language_warning"] = (
+                f"The document looks like {wrong_script} text, but the source "
+                f"language is set to '{cfg.source_lang}'. Check the translation "
+                "direction (source/target languages)."
+            )
         if parsed.meta.get("ocr"):
             report["ocr"] = {"pages_transcribed": parsed.meta.get("pages_transcribed")}
         if figure_descriptions:
@@ -387,7 +412,12 @@ class TranslationPipeline:
             report["bilingual_markdown"] = str(bilingual_path)
         if self.translator.doc_terms:
             report["auto_glossary"] = self.translator.doc_terms
-        status = "completed" if report["segments_failed"] == 0 else "partial"
+        # A garbled/scanned source that wasn't OCR'd yields nonsense even if
+        # every segment "translated" — never report that as a clean success.
+        if report["segments_failed"] == 0 and not report.get("scan_warning"):
+            status = "completed"
+        else:
+            status = "partial"
         stage("done", 1.0)
         return JobResult(
             job_id=job_id,
