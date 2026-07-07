@@ -46,7 +46,10 @@ _SETTING_TYPES: dict[str, type] = {
     "quality_score": bool, "fix_latex": bool, "render_check": bool,
     "structured_outputs": bool, "ocr_on_scan": bool, "parser_fallback": bool,
     "adaptive_throttle": bool, "parse_cache": bool, "resume": bool,
-    "tm_autoexport_every": int,
+    "memory_guard": bool,
+    "tm_autoexport_every": int, "min_free_memory_mb": int,
+    "memory_wait_timeout": int, "stall_warning_seconds": int, "max_ocr_pages": int,
+    "ocr_dpi": int, "ocr_prompt": str,
     "log_level": str,
 }
 

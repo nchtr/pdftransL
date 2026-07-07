@@ -28,13 +28,16 @@ _BOOL_KEYS = (
     "structured_outputs", "ocr_on_scan", "parser_fallback",
     "adaptive_throttle", "parse_cache", "resume",
 )
+_BOOL_KEYS = _BOOL_KEYS + ("memory_guard",)
 _STR_KEYS = (
     "provider", "model", "vision_provider", "vision_model",
     "parser_backend", "domain", "source_lang", "target_lang",
+    "ocr_prompt",
 )
 _INT_KEYS = (
     "max_workers", "rpm_limit", "parser_timeout", "ocr_dpi",
-    "tm_autoexport_every",
+    "tm_autoexport_every", "min_free_memory_mb", "memory_wait_timeout",
+    "stall_warning_seconds", "max_ocr_pages",
 )
 
 

@@ -3,8 +3,12 @@
 Renders every page to an image and asks a vision model to transcribe
 it to Markdown with LaTeX math. This is the one parsing path that
 handles scans *and* recognizes their formulas, and it runs anywhere a
-vision model is reachable — a cloud API (gpt-4o, Claude) or a local
-one (qwen2.5-vl via Ollama), so it works fully offline too.
+vision model is reachable — a cloud API (gpt-4o, Claude), a general
+local VLM (qwen2.5-vl via Ollama), or a *specialized* document-OCR
+model (DeepSeek-OCR, GOT-OCR served via vLLM). The OCR model is chosen
+independently of the translation model via ``vision_model`` /
+``vision_provider``, so you can pair a strong OCR model for parsing
+with a lighter LLM for translation.
 
 Selected explicitly (``--backend vlm_ocr``) or automatically when the
 pipeline detects a scan and ``ocr_on_scan`` is enabled.
@@ -24,6 +28,7 @@ from pdftransl.parsing.base import ParserBackend
 
 logger = logging.getLogger(__name__)
 
+# Full instructions for a general-purpose VLM (gpt-4o, gemma3, qwen-vl).
 _OCR_SYSTEM = """\
 You are an OCR engine for scanned scientific papers. Transcribe the
 page image to clean Markdown. Rules:
@@ -36,6 +41,19 @@ page image to clean Markdown. Rules:
 - Reproduce tables as Markdown tables.
 - Output ONLY the transcription — no commentary, no code fences around
   the whole answer."""
+
+# Model-name substrings marking a purpose-built document-OCR model. These
+# are trained to convert a page straight to markdown from a terse
+# instruction and get confused by a long system prompt.
+_SPECIALIZED_OCR_HINTS = ("deepseek-ocr", "got-ocr", "gotocr", "olmocr",
+                          "nanonets-ocr", "docling", "-ocr")
+# The instruction such models expect (DeepSeek-OCR "grounding" markdown mode).
+_SPECIALIZED_OCR_PROMPT = "<|grounding|>Convert the document to markdown."
+
+
+def is_specialized_ocr_model(model: Optional[str]) -> bool:
+    name = (model or "").lower()
+    return any(h in name for h in _SPECIALIZED_OCR_HINTS)
 
 
 class VlmOcrBackend(ParserBackend):
@@ -52,12 +70,22 @@ class VlmOcrBackend(ParserBackend):
             self._client = create_client(self.config.vision_provider_config())
         return self._client
 
+    def _build_messages(self, client: BaseLLMClient, img_path) -> list:
+        """Page-transcription messages, tuned to the OCR model in use."""
+        override = self.config.ocr_prompt
+        if is_specialized_ocr_model(getattr(client, "model", "")):
+            # specialized OCR model: terse instruction, no heavy system prompt
+            prompt = override or _SPECIALIZED_OCR_PROMPT
+            return [vision_message(prompt, img_path)]
+        prompt = override or "Transcribe this page."
+        return [
+            {"role": "system", "content": _OCR_SYSTEM},
+            vision_message(prompt, img_path),
+        ]
+
     def _transcribe_page(self, client: BaseLLMClient, img_path, page_no: int) -> str:
         """One page → Markdown; one retry, then a visible placeholder."""
-        messages = [
-            {"role": "system", "content": _OCR_SYSTEM},
-            vision_message("Transcribe this page.", img_path),
-        ]
+        messages = self._build_messages(client, img_path)
         last_exc = None
         for attempt in range(2):
             try:
