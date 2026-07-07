@@ -26,13 +26,16 @@ _BOOL_KEYS = (
     "backtranslation_check", "doc_summary", "auto_glossary",
     "skip_references", "quality_score", "fix_latex", "render_check",
     "structured_outputs", "ocr_on_scan", "parser_fallback",
-    "adaptive_throttle", "parse_cache",
+    "adaptive_throttle", "parse_cache", "resume",
 )
 _STR_KEYS = (
     "provider", "model", "vision_provider", "vision_model",
     "parser_backend", "domain", "source_lang", "target_lang",
 )
-_INT_KEYS = ("max_workers", "rpm_limit", "parser_timeout", "ocr_dpi")
+_INT_KEYS = (
+    "max_workers", "rpm_limit", "parser_timeout", "ocr_dpi",
+    "tm_autoexport_every",
+)
 
 
 def _apply_options(overrides: dict, options: dict) -> None:
@@ -63,6 +66,40 @@ def runtime_settings() -> dict:
         return dict(ServerConfig.load().data or {})
     except Exception:  # e.g. before migrations have run
         return {}
+
+
+def scan_upload(uploaded_file) -> tuple[bool, str]:
+    """Optional antivirus / content scan of an uploaded file.
+
+    Runs the command in ``PDFTRANSL_AV_SCAN_CMD`` (e.g. ``clamscan``)
+    against a temp copy; a non-zero exit rejects the upload. When the
+    env var is unset, uploads pass through. Returns ``(ok, reason)``.
+    """
+    import os
+    import shlex
+    import subprocess
+    import tempfile
+
+    cmd = os.environ.get("PDFTRANSL_AV_SCAN_CMD", "").strip()
+    if not cmd:
+        return True, ""
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=True) as tmp:
+        for chunk in uploaded_file.chunks():
+            tmp.write(chunk)
+        tmp.flush()
+        uploaded_file.seek(0)
+        try:
+            proc = subprocess.run(
+                shlex.split(cmd) + [tmp.name],
+                capture_output=True, text=True, timeout=120,
+            )
+        except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
+            logger.warning("AV scan could not run: %s", exc)
+            return False, "virus scan unavailable"
+    if proc.returncode != 0:
+        logger.warning("AV scan rejected upload: %s", (proc.stdout or "")[-200:])
+        return False, "failed virus scan"
+    return True, ""
 
 
 def build_config(job: TranslationJob) -> PipelineConfig:

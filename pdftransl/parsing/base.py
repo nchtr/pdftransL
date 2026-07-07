@@ -44,24 +44,30 @@ def collect_assets(markdown_dir: Path, markdown: str) -> list[Asset]:
 
 def _all_backends(config: PipelineConfig) -> dict[str, ParserBackend]:
     from pdftransl.parsing.docling_backend import DoclingBackend
+    from pdftransl.parsing.grobid_backend import GrobidBackend
     from pdftransl.parsing.marker_backend import MarkerBackend
     from pdftransl.parsing.mineru_api import MineruApiBackend
     from pdftransl.parsing.mineru_local import MineruLocalBackend
+    from pdftransl.parsing.nougat_backend import NougatBackend
     from pdftransl.parsing.pymupdf_backend import PyMuPdfBackend
     from pdftransl.parsing.vlm_ocr_backend import VlmOcrBackend
 
     return {
         "mineru_local": MineruLocalBackend(config),
         "mineru_api": MineruApiBackend(config),
+        "nougat": NougatBackend(config),
         "marker": MarkerBackend(),
         "docling": DoclingBackend(),
+        "grobid": GrobidBackend(config),
         "vlm_ocr": VlmOcrBackend(config),
         "pymupdf": PyMuPdfBackend(),
     }
 
 
 # order of preference for the 'auto' backend and fallback chain
-_AUTO_ORDER = ("mineru_local", "mineru_api", "marker", "docling", "pymupdf")
+_AUTO_ORDER = (
+    "mineru_local", "mineru_api", "nougat", "marker", "docling", "grobid", "pymupdf",
+)
 
 
 def get_backend(config: PipelineConfig) -> ParserBackend:

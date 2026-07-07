@@ -104,7 +104,10 @@ UPLOADS_PER_HOUR = int(os.environ.get("PDFTRANSL_UPLOADS_PER_HOUR", "20"))
 USE_CELERY = os.environ.get("USE_CELERY", "0").strip().lower() in ("1", "true", "yes")
 CELERY_BROKER_URL = os.environ.get("CELERY_BROKER_URL", "redis://localhost:6379/0")
 CELERY_RESULT_BACKEND = os.environ.get("CELERY_RESULT_BACKEND", CELERY_BROKER_URL)
-CELERY_TASK_TIME_LIMIT = 3600
+CELERY_TASK_TIME_LIMIT = int(os.environ.get("CELERY_TASK_TIME_LIMIT", "7200"))
+# queue new jobs land on; point a GPU worker at a heavy queue if desired
+PDFTRANSL_JOB_QUEUE = os.environ.get("PDFTRANSL_JOB_QUEUE", "pdftransl")
+CELERY_TASK_DEFAULT_QUEUE = "pdftransl"
 
 # --- CORS (React dev server) ----------------------------------------------
 CORS_ALLOWED_ORIGINS = [

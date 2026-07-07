@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import sqlite3
 import threading
 import time
@@ -21,6 +22,8 @@ from pathlib import Path
 from typing import Optional
 
 from pdftransl.rag.embeddings import BaseEmbedder, cosine
+
+logger = logging.getLogger(__name__)
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS tm_segments (
@@ -191,10 +194,37 @@ class TranslationMemory:
     def export_jsonl(self, path: str | Path) -> int:
         """Dump TM as JSONL — e.g. as a fine-tuning dataset."""
         count = 0
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as conn, open(path, "w", encoding="utf-8") as fh:
             for row in conn.execute(
                 "SELECT source, target, src_lang, tgt_lang, origin FROM tm_segments"
             ):
                 fh.write(json.dumps(dict(row), ensure_ascii=False) + "\n")
                 count += 1
+        return count
+
+    def maybe_autoexport(self, every: int, path: str | Path) -> Optional[int]:
+        """Export the fine-tuning dataset each time the memory crosses a
+        new multiple of ``every`` segments. A sidecar file tracks the
+        last export so it fires once per threshold, not every run.
+        Returns the exported count when it fired, else None."""
+        if every <= 0:
+            return None
+        total = self.stats()["segments"]
+        marker = Path(str(path) + ".mark")
+        last = 0
+        if marker.exists():
+            try:
+                last = int(marker.read_text().strip() or "0")
+            except (OSError, ValueError):
+                last = 0
+        if total // every <= last // every:
+            return None
+        count = self.export_jsonl(path)
+        try:
+            marker.write_text(str(total), encoding="utf-8")
+        except OSError:
+            pass
+        logger.info("TM auto-export: %d segments -> %s (fine-tuning dataset)",
+                    count, path)
         return count

@@ -316,7 +316,20 @@ class TranslationPipeline:
             logger.info("[%s] auto-glossary: %d terms",
                         job_id, len(self.translator.doc_terms))
 
-        # 3. parallel translation with validation + repair loop
+        # 3. parallel translation with validation + repair loop.
+        # A per-document checkpoint lets a re-run resume finished segments.
+        checkpoint = None
+        if cfg.resume:
+            from pdftransl.translation.checkpoint import Checkpoint
+
+            checkpoint = Checkpoint(
+                out_dir / ".checkpoint.jsonl", cfg.source_lang, cfg.target_lang
+            )
+            if checkpoint.count:
+                logger.info("[%s] resuming: %d segment(s) already done",
+                            job_id, checkpoint.count)
+        self.translator.checkpoint = checkpoint
+
         def progress(done: int, total: int, _seg_id: str) -> None:
             stage("translate", 0.1 + 0.5 * (done / max(total, 1)))
 
@@ -433,6 +446,14 @@ class TranslationPipeline:
                     learned += 1
             logger.info("[%s] stored %d segments into translation memory", job_id, learned)
 
+            # auto-export a fine-tuning dataset each time the TM crosses
+            # a new threshold (docs/FINETUNING.md)
+            if cfg.tm_autoexport_every > 0:
+                path = cfg.tm_autoexport_path or str(
+                    Path(cfg.db_path).with_name("tm_dataset.jsonl")
+                )
+                self.tm.maybe_autoexport(cfg.tm_autoexport_every, path)
+
         # 12. report
         report = document_report(segments)
         report["assets"] = [a.to_dict() for a in parsed.assets]
@@ -471,6 +492,10 @@ class TranslationPipeline:
             status = "completed"
         else:
             status = "partial"
+        # Clean the resume checkpoint on a full success so a later
+        # deliberate re-run starts fresh; a partial run keeps it to resume.
+        if checkpoint is not None and status == "completed":
+            checkpoint.clear()
         stage("done", 1.0)
         return JobResult(
             job_id=job_id,

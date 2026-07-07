@@ -45,7 +45,8 @@ _SETTING_TYPES: dict[str, type] = {
     "doc_summary": bool, "auto_glossary": bool, "skip_references": bool,
     "quality_score": bool, "fix_latex": bool, "render_check": bool,
     "structured_outputs": bool, "ocr_on_scan": bool, "parser_fallback": bool,
-    "adaptive_throttle": bool, "parse_cache": bool,
+    "adaptive_throttle": bool, "parse_cache": bool, "resume": bool,
+    "tm_autoexport_every": int,
     "log_level": str,
 }
 
@@ -114,6 +115,17 @@ def jobs(request):
         return JsonResponse(
             {"error": f"file larger than {settings.MAX_UPLOAD_MB} MB"}, status=413
         )
+    # validate the actual content, not just the extension
+    head = pdf.read(5)
+    pdf.seek(0)
+    if head[:5] != b"%PDF-":
+        return JsonResponse(
+            {"error": "file does not look like a PDF (bad signature)"}, status=400
+        )
+    # optional antivirus / content scan hook (PDFTRANSL_AV_SCAN_CMD)
+    ok, reason = services.scan_upload(pdf)
+    if not ok:
+        return JsonResponse({"error": f"upload rejected: {reason}"}, status=422)
 
     options: dict = {}
     raw_options = request.POST.get("options")
