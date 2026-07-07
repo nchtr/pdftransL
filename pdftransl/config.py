@@ -101,6 +101,16 @@ PROVIDER_PRESETS: dict[str, ProviderConfig] = {
         model="local-model",
         is_local=True,
     ),
+    # Specialized document-OCR model served via vLLM (OpenAI-compatible),
+    # e.g. `vllm serve deepseek-ai/DeepSeek-OCR`. Use as a vision provider
+    # for the vlm_ocr backend, paired with any translation provider.
+    "deepseek_ocr": ProviderConfig(
+        name="deepseek_ocr",
+        base_url="http://localhost:8000/v1",
+        model="deepseek-ai/DeepSeek-OCR",
+        is_local=True,
+        supports_vision=True,
+    ),
 }
 
 
@@ -112,6 +122,8 @@ _VISION_MODEL_HINTS = (
     "pixtral", "internvl", "cogvlm", "idefics", "granite-vision", "-v:",
     "llama3.2-vision", "llama-3.2-vision", "gpt-4o", "gpt-4.1", "gpt-5",
     "claude", "gemini",
+    # specialized document-OCR models (served via vLLM etc.)
+    "-ocr", "deepseek-ocr", "got-ocr", "olmocr", "nanonets-ocr",
 )
 
 
@@ -165,11 +177,18 @@ class PipelineConfig:
     target_lang: str = "ru"
 
     # Parsing
-    parser_backend: str = "auto"        # auto | mineru_local | mineru_api | marker | docling | vlm_ocr | pymupdf
+    parser_backend: str = "auto"        # auto | mineru_local | mineru_api | nougat | marker | docling | grobid | vlm_ocr | pymupdf
     mineru_api_base: str = "https://mineru.net/api/v4"
     mineru_api_key_env: str = "MINERU_API_KEY"
     parser_timeout: int = 1800          # seconds before a local parser is killed
     parser_fallback: bool = True        # fall back to another backend if one fails
+
+    # Resource guards (avoid OOM when a heavy parser and the model overlap)
+    memory_guard: bool = True           # GC + log memory between stages
+    min_free_memory_mb: int = 0         # wait for this much free RAM before loading
+    # the translation model after a heavy parser (0 = off; set ~ model size in MB)
+    memory_wait_timeout: int = 180      # max seconds to wait for memory to free
+    stall_warning_seconds: int = 180    # warn if an LLM/parser makes no progress this long
 
     # Translation provider
     provider: str = "openrouter"
@@ -237,6 +256,7 @@ class PipelineConfig:
     ocr_on_scan: bool = True            # auto-route detected scans to VLM OCR
     ocr_dpi: int = 200                  # page render resolution for OCR
     max_ocr_pages: int = 50             # cap VLM OCR calls per document
+    ocr_prompt: Optional[str] = None    # override the per-page OCR instruction
 
     # Output
     bilingual: bool = False             # alternate source/translation paragraphs
@@ -290,6 +310,7 @@ class PipelineConfig:
             ("PDFTRANSL_PARSER_FALLBACK", "parser_fallback"),
             ("PDFTRANSL_ADAPTIVE_THROTTLE", "adaptive_throttle"),
             ("PDFTRANSL_RESUME", "resume"),
+            ("PDFTRANSL_MEMORY_GUARD", "memory_guard"),
         ):
             if env.get(flag) is not None:
                 kwargs[attr] = env[flag].strip().lower() in ("1", "true", "yes", "on")
@@ -299,6 +320,10 @@ class PipelineConfig:
             kwargs["parser_timeout"] = int(env["PDFTRANSL_PARSER_TIMEOUT"])
         if env.get("PDFTRANSL_OCR_DPI"):
             kwargs["ocr_dpi"] = int(env["PDFTRANSL_OCR_DPI"])
+        if env.get("PDFTRANSL_MIN_FREE_MEMORY_MB"):
+            kwargs["min_free_memory_mb"] = int(env["PDFTRANSL_MIN_FREE_MEMORY_MB"])
+        if env.get("PDFTRANSL_OCR_PROMPT"):
+            kwargs["ocr_prompt"] = env["PDFTRANSL_OCR_PROMPT"]
         if env.get("PDFTRANSL_RPM"):
             kwargs["rpm_limit"] = int(env["PDFTRANSL_RPM"])
         if env.get("PDFTRANSL_FALLBACK_PROVIDERS"):

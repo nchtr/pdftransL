@@ -102,6 +102,7 @@ class TranslationPipeline:
         self.reviewer = Reviewer(self.client, self.config) if self.config.review else None
         self._vision_client_cached: Optional[BaseLLMClient] = None
         self._vision_client_built = False
+        self._memory_warning: Optional[str] = None
 
     # ------------------------------------------------------------------
     def run(
@@ -124,10 +125,17 @@ class TranslationPipeline:
                 on_stage(name, progress)
 
         try:
+            self._log_memory("before parse", job_id)
             stage("parse", 0.0)
             parsed = self._parse(pdf_path, out_dir / "parse")
             source_md_path = out_dir / f"{pdf_path.stem}.md"
             source_md_path.write_text(parsed.markdown, encoding="utf-8")
+
+            # The OOM fix: a heavy parser (MinerU/Nougat runs as a subprocess
+            # and holds gigabytes) must have released its memory before we
+            # load the translation model — otherwise both coexist and the
+            # machine OOMs. Wait for RAM to free, then proceed.
+            self._memory_guard(job_id, parsed.backend)
 
             result = self._translate_parsed(
                 parsed, out_dir, job_id, stage,
@@ -138,6 +146,8 @@ class TranslationPipeline:
             result.report["parser_backend"] = parsed.backend
             if parsed.meta.get("cache"):
                 result.report["parse_cache"] = "hit"
+            if self._memory_warning:
+                result.report["memory_warning"] = self._memory_warning
             report_path = out_dir / "report.json"
             result.report_path = str(report_path)
             result.save_report(report_path)
@@ -145,6 +155,48 @@ class TranslationPipeline:
         except Exception as exc:
             logger.exception("[%s] pipeline failed", job_id)
             return JobResult(job_id=job_id, status="failed", error=str(exc))
+
+    # -- resource guards -----------------------------------------------
+    def _log_memory(self, label: str, job_id: str) -> None:
+        if not self.config.memory_guard:
+            return
+        from pdftransl.resources import memory_stats
+
+        stats = memory_stats()
+        if stats is not None:
+            logger.info("[%s] memory %s: %.0f MB free / %.0f MB (%.0f%% used)",
+                        job_id, label, stats.available_mb, stats.total_mb,
+                        stats.used_pct)
+            if stats.available_mb < 500:
+                self._memory_warning = (
+                    f"Very low memory ({stats.available_mb:.0f} MB free) {label}; "
+                    "the machine may OOM. Close other apps or use a lighter "
+                    "parser/model."
+                )
+
+    def _memory_guard(self, job_id: str, backend_name: str) -> None:
+        """Between a heavy parser and loading the translation model, wait
+        for the parser's RAM to be reclaimed (prevents the MinerU + Ollama
+        OOM). Only relevant for local, memory-hungry backends."""
+        if not self.config.memory_guard:
+            return
+        from pdftransl.resources import wait_for_memory
+
+        heavy = backend_name in ("mineru_local", "nougat", "marker", "docling")
+        floor = self.config.min_free_memory_mb if heavy else 0
+        stats = wait_for_memory(
+            floor, self.config.memory_wait_timeout, label=job_id,
+        )
+        if stats is not None:
+            logger.info("[%s] memory before translate: %.0f MB free",
+                        job_id, stats.available_mb)
+            if floor and stats.available_mb < floor:
+                self._memory_warning = (
+                    f"Only {stats.available_mb:.0f} MB free before loading the "
+                    f"model (wanted {floor} MB). Loading the translation model "
+                    "now risks an out-of-memory crash — consider a smaller model, "
+                    "the cloud, or a bigger machine."
+                )
 
     def translate_markdown(
         self,
@@ -330,10 +382,29 @@ class TranslationPipeline:
                             job_id, checkpoint.count)
         self.translator.checkpoint = checkpoint
 
+        # Watchdog: warn if translation makes no progress (a hung/unresponsive
+        # LLM) instead of silently waiting forever.
+        from pdftransl.resources import Watchdog
+
+        def on_stall(idle: float) -> None:
+            logger.warning(
+                "[%s] translation stalled: no segment finished for %.0fs — the "
+                "LLM may be unresponsive (model loading, overloaded, or hung)",
+                job_id, idle,
+            )
+            self._memory_warning = self._memory_warning or (
+                f"Translation stalled for {idle:.0f}s — the model provider seems "
+                "unresponsive (loading a large model, out of memory, or hung)."
+            )
+
+        watchdog = Watchdog(cfg.stall_warning_seconds, on_stall)
+
         def progress(done: int, total: int, _seg_id: str) -> None:
+            watchdog.beat()
             stage("translate", 0.1 + 0.5 * (done / max(total, 1)))
 
-        self.translator.translate_segments(segments, progress=progress)
+        with watchdog:
+            self.translator.translate_segments(segments, progress=progress)
 
         # 4. optional LLM-judge quality scoring (flags weak segments)
         quality_scores: dict = {}

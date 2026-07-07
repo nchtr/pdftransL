@@ -3,12 +3,27 @@ import { api } from '../api.js'
 
 const LANGS = ['en', 'ru', 'de', 'fr', 'es', 'zh', 'ja', 'uk']
 
+const PARSERS = [
+  ['', 'по умолчанию (auto)'],
+  ['auto', 'auto — лучший из установленных'],
+  ['mineru_local', 'MinerU (локально, формулы)'],
+  ['mineru_api', 'MinerU API (облако)'],
+  ['vlm_ocr', 'OCR vision-моделью (сканы, DeepSeek-OCR)'],
+  ['nougat', 'Nougat (формулы, GPU)'],
+  ['marker', 'marker (быстрый)'],
+  ['docling', 'Docling (таблицы)'],
+  ['grobid', 'GROBID (структура/библиография)'],
+  ['pymupdf', 'PyMuPDF (текст, мгновенно)'],
+]
+
 export default function UploadForm({ meta, onSubmitted, onError }) {
   const [file, setFile] = useState(null)
   const [sourceLang, setSourceLang] = useState('en')
   const [targetLang, setTargetLang] = useState('ru')
   const [provider, setProvider] = useState('')
   const [model, setModel] = useState('')
+  const [parser, setParser] = useState('')
+  const [visionModel, setVisionModel] = useState('')
   const [formats, setFormats] = useState(['html', 'docx', 'pdf'])
   const [options, setOptions] = useState({
     review: true,
@@ -42,7 +57,10 @@ export default function UploadForm({ meta, onSubmitted, onError }) {
       form.append('target_lang', targetLang)
       if (provider) form.append('provider', provider)
       if (model) form.append('model', model)
-      form.append('options', JSON.stringify({ ...options, formats }))
+      const jobOptions = { ...options, formats }
+      if (parser) jobOptions.parser_backend = parser
+      if (visionModel) jobOptions.vision_model = visionModel
+      form.append('options', JSON.stringify(jobOptions))
       await api.createJob(form)
       setFile(null)
       e.target.reset()
@@ -98,7 +116,7 @@ export default function UploadForm({ meta, onSubmitted, onError }) {
           </select>
         </label>
         <label>
-          Модель (необязательно)
+          Модель перевода (необязательно)
           <input
             type="text"
             placeholder="например qwen2.5:14b или gemma3:12b"
@@ -107,9 +125,31 @@ export default function UploadForm({ meta, onSubmitted, onError }) {
           />
         </label>
       </div>
+
+      <div className="row">
+        <label>
+          Парсер PDF
+          <select value={parser} onChange={(e) => setParser(e.target.value)}>
+            {PARSERS.map(([value, title]) => (
+              <option key={value || 'default'} value={value}>{title}</option>
+            ))}
+          </select>
+        </label>
+        <label>
+          OCR-модель (необязательно)
+          <input
+            type="text"
+            placeholder="напр. deepseek-ai/DeepSeek-OCR"
+            value={visionModel}
+            onChange={(e) => setVisionModel(e.target.value)}
+          />
+        </label>
+      </div>
       <p className="hint">
-        💡 Мультимодальная модель (gemma3, llava, *-vl, llama3.2-vision…)
-        сама распознаёт сканы и PDF с битым текстовым слоем через OCR.
+        💡 Выберите «OCR vision-моделью» для сканов — можно указать
+        специализированную OCR-модель (DeepSeek-OCR) для парсинга и
+        отдельную LLM для перевода. Обычная мультимодальная модель
+        (gemma3, *-vl) тоже сама распознаёт сканы.
       </p>
 
       <fieldset>
