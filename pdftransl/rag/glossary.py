@@ -85,6 +85,15 @@ class Glossary:
                 break
         return hits
 
+    def remove(self, term: str, src_lang: str, tgt_lang: str) -> bool:
+        """Delete a term; returns True if something was removed."""
+        with self._lock, self._connect() as conn:
+            cur = conn.execute(
+                "DELETE FROM glossary WHERE term=? AND src_lang=? AND tgt_lang=?",
+                (term.strip(), src_lang, tgt_lang),
+            )
+            return cur.rowcount > 0
+
     def list_all(self, src_lang: str | None = None, tgt_lang: str | None = None) -> list[dict]:
         query = "SELECT term, translation, src_lang, tgt_lang, notes FROM glossary"
         params: tuple = ()

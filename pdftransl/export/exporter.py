@@ -132,6 +132,63 @@ def _weasyprint_pdf(html_text: str, output_path: Path, base_url: str) -> bool:
         return False
 
 
+def _tex_engine() -> Optional[str]:
+    """A TeX engine capable of compiling our exported .tex (Unicode-aware)."""
+    for name in ("tectonic", "xelatex", "lualatex"):
+        exe = shutil.which(name)
+        if exe:
+            return exe
+    return None
+
+
+def _xelatex_pdf(
+    markdown: str, output_path: Path, assets_dir: Optional[Path], title: str
+) -> bool:
+    """Compile our own LaTeX export to PDF with xelatex/tectonic.
+
+    Fills the gap when TeX is installed but pandoc isn't: real LaTeX
+    typography, native formulas, no browser needed.
+    """
+    engine = _tex_engine()
+    if engine is None:
+        return False
+    import tempfile
+
+    from pdftransl.export.latex import export_latex
+
+    with tempfile.TemporaryDirectory(prefix="pdftransl_tex_") as tmp:
+        tmpdir = Path(tmp)
+        tex_path = tmpdir / "document.tex"
+        export_latex(markdown, tex_path, title=title)
+        if assets_dir is not None and Path(assets_dir).exists():
+            # image paths in the markdown are relative to the assets dir
+            shutil.copytree(assets_dir, tmpdir / Path(assets_dir).name,
+                            dirs_exist_ok=True)
+            for sub in Path(assets_dir).iterdir():
+                if sub.is_dir():
+                    shutil.copytree(sub, tmpdir / sub.name, dirs_exist_ok=True)
+        if "tectonic" in Path(engine).name:
+            cmd = [engine, "--keep-logs", str(tex_path)]
+        else:
+            cmd = [engine, "-interaction=nonstopmode", "-halt-on-error",
+                   tex_path.name]
+        try:
+            # two passes for stable layout; tectonic handles reruns itself
+            passes = 1 if "tectonic" in Path(engine).name else 2
+            for _ in range(passes):
+                subprocess.run(cmd, cwd=tmpdir, check=True,
+                               capture_output=True, text=True, timeout=300)
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+            tail = (getattr(exc, "stdout", "") or "")[-600:]
+            logger.warning("%s failed: %s", Path(engine).name, tail or exc)
+            return False
+        produced = tmpdir / "document.pdf"
+        if not produced.exists():
+            return False
+        shutil.copy2(produced, output_path)
+    return output_path.exists()
+
+
 def available_engines() -> dict[str, list[str]]:
     """Which export engines can run in this environment (for the UI)."""
     engines: dict[str, list[str]] = {
@@ -153,6 +210,8 @@ def available_engines() -> dict[str, list[str]]:
             engines["pdf"].append("chromium")
     except ImportError:
         pass
+    if _tex_engine() is not None:
+        engines["pdf"].append("xelatex")
     try:
         import weasyprint  # noqa: F401
         engines["pdf"].append("weasyprint")
@@ -222,12 +281,15 @@ def export_document(
             files["pdf"], engines["pdf"] = str(pdf_path), "pandoc"
         elif _chromium_pdf(html_path, pdf_path):
             files["pdf"], engines["pdf"] = str(pdf_path), "chromium"
+        elif _xelatex_pdf(markdown, pdf_path, assets, title):
+            files["pdf"], engines["pdf"] = str(pdf_path), "xelatex"
         elif _weasyprint_pdf(html_text, pdf_path, base_url=str(out_base.parent)):
             files["pdf"], engines["pdf"] = str(pdf_path), "weasyprint"
         else:
             files["pdf"] = None
             engines["pdf"] = (
-                "unavailable: install pandoc (+xelatex), playwright or weasyprint"
+                "unavailable: install pandoc, playwright (chromium), "
+                "a TeX engine (xelatex/tectonic) or weasyprint"
             )
 
     if md_path.exists():

@@ -90,10 +90,12 @@ class Translator:
         client: BaseLLMClient,
         config: PipelineConfig,
         retriever=None,   # rag.retriever.RAGContextBuilder | None
+        checkpoint=None,  # translation.checkpoint.Checkpoint | None
     ):
         self.client = client
         self.config = config
         self.retriever = retriever
+        self.checkpoint = checkpoint
         # Document-level context, set once per document by the pipeline.
         self.doc_summary: str = ""
         self.doc_terms: list[dict[str, str]] = []
@@ -105,7 +107,22 @@ class Translator:
         if segment.kind != "translate":
             return segment
 
+        import time as _time
+        started = _time.monotonic()
         cfg = self.config
+
+        # Resume: a previous run of this document already finished this
+        # segment — reuse it without touching the LLM.
+        if self.checkpoint is not None:
+            done = self.checkpoint.get(segment.source_text)
+            if done is not None:
+                segment.translation = done
+                segment.issues.append(
+                    QAIssue("resumed", "reused from checkpoint (resumed job)", "info")
+                )
+                logger.debug("segment %s: resumed from checkpoint", segment.id)
+                return segment
+
         if self.retriever is not None:
             context = self.retriever.build(segment.source_text)
             segment.tm_examples = context.get("tm_examples", [])
@@ -117,6 +134,8 @@ class Translator:
                 segment.issues.append(
                     QAIssue("tm_exact", "reused exact translation-memory match", "info")
                 )
+                logger.debug("segment %s: exact TM hit (%d chars)",
+                             segment.id, len(segment.source_text))
                 return segment
 
         # Per-document terms + stored glossary hits found in this segment.
@@ -170,6 +189,17 @@ class Translator:
             segment.attempts += 1
             self._finalize(segment, raw)
 
+        logger.debug(
+            "segment %s: %d chars, %d placeholders, %d attempt(s), "
+            "%d issue(s), %.1fs%s",
+            segment.id, len(segment.source_text), len(segment.placeholders),
+            segment.attempts, len(segment.issues),
+            _time.monotonic() - started, "" if segment.ok else " [FAILED]",
+        )
+        # Checkpoint only clean segments so a resumed run re-tries the
+        # bad ones instead of caching garbage.
+        if self.checkpoint is not None and segment.ok and segment.translation:
+            self.checkpoint.put(segment.source_text, segment.translation)
         return segment
 
     def _finalize(self, segment: Segment, raw_translation: str) -> None:
@@ -219,7 +249,16 @@ class Translator:
         workers = max(1, self.config.max_workers)
         if workers == 1 or total <= 1:
             for segment in to_translate:
-                self.translate_segment(segment, contexts.get(segment.id, ""))
+                # A single segment blowing up (provider outage) must not sink
+                # the whole document — flag it and keep going, same as the
+                # parallel path, so finished segments still get checkpointed.
+                try:
+                    self.translate_segment(segment, contexts.get(segment.id, ""))
+                except Exception as exc:
+                    logger.error("Segment %s failed: %s", segment.id, exc)
+                    segment.issues.append(
+                        QAIssue("exception", f"translation call failed: {exc}", "error")
+                    )
                 done += 1
                 if progress:
                     progress(done, total, segment.id)

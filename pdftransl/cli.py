@@ -53,6 +53,10 @@ def _add_common(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--fallback", default=None,
                         help="fallback providers, comma-separated (tried on failure)")
     parser.add_argument("--no-cache", action="store_true", help="disable the parse cache")
+    parser.add_argument("--no-resume", action="store_true",
+                        help="do not resume finished segments from a previous run")
+    parser.add_argument("--tm-autoexport-every", type=int, default=None,
+                        help="export a fine-tune dataset every N new TM segments")
     parser.add_argument("--backtranslation", action="store_true",
                         help="enable the back-translation semantic check")
     parser.add_argument("--domain", default=None,
@@ -95,6 +99,10 @@ def _config_from_args(args: argparse.Namespace) -> PipelineConfig:
         overrides["review"] = False
     if args.no_learn:
         overrides["learn"] = False
+    if args.no_resume:
+        overrides["resume"] = False
+    if args.tm_autoexport_every:
+        overrides["tm_autoexport_every"] = args.tm_autoexport_every
     if args.describe_figures:
         overrides["describe_figures"] = True
     if args.db:
@@ -127,9 +135,9 @@ def _config_from_args(args: argparse.Namespace) -> PipelineConfig:
 
 
 def main(argv: list[str] | None = None) -> int:
-    logging.basicConfig(
-        level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
-    )
+    from pdftransl.logging_setup import setup_logging
+
+    setup_logging()   # PDFTRANSL_LOG_LEVEL / PDFTRANSL_LOG_FILE
     parser = argparse.ArgumentParser(
         prog="pdftransl", description="Scientific PDF translation engine"
     )

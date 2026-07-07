@@ -3,6 +3,26 @@ import uuid
 from django.db import models
 
 
+class ServerConfig(models.Model):
+    """Runtime server defaults, editable from the web UI without a
+    restart. Stored as one JSON blob (option-name -> value) using the
+    same keys as per-job options; per-job options still win."""
+
+    data = models.JSONField(default=dict, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "server configuration"
+
+    @classmethod
+    def load(cls) -> "ServerConfig":
+        obj, _created = cls.objects.get_or_create(pk=1)
+        return obj
+
+    def __str__(self) -> str:
+        return f"server config ({len(self.data or {})} overrides)"
+
+
 class TranslationJob(models.Model):
     """A PDF translation job and its produced artifacts."""
 

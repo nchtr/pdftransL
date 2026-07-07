@@ -23,11 +23,34 @@ export const api = {
   rebuild: (id) => json(`/api/jobs/${id}/rebuild/`, { method: 'POST' }),
   tmStats: () => json('/api/tm/stats/'),
   glossary: () => json('/api/glossary/'),
-  addTerm: (term, translation) =>
+  addTerm: (term, translation, sourceLang, targetLang) =>
     json('/api/glossary/', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ term, translation }),
+      body: JSON.stringify({
+        term,
+        translation,
+        ...(sourceLang ? { source_lang: sourceLang } : {}),
+        ...(targetLang ? { target_lang: targetLang } : {}),
+      }),
+    }),
+  deleteTerm: (term, sourceLang, targetLang) =>
+    json('/api/glossary/', {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        term,
+        ...(sourceLang ? { source_lang: sourceLang } : {}),
+        ...(targetLang ? { target_lang: targetLang } : {}),
+      }),
+    }),
+  deleteJob: (id) => json(`/api/jobs/${id}/`, { method: 'DELETE' }),
+  settings: () => json('/api/settings/'),
+  saveSettings: (data) =>
+    json('/api/settings/', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
     }),
   downloadUrl: (id, format) => `${BASE}/api/jobs/${id}/download/?format=${format}`,
 }

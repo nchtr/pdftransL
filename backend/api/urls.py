@@ -19,4 +19,5 @@ urlpatterns = [
     path("providers/", views.providers, name="providers"),
     path("glossary/", views.glossary, name="glossary"),
     path("tm/stats/", views.tm_stats, name="tm-stats"),
+    path("settings/", views.server_settings, name="settings"),
 ]

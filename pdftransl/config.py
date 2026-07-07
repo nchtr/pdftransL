@@ -211,6 +211,8 @@ class PipelineConfig:
     # Provider behaviour
     structured_outputs: bool = False     # ask for JSON mode where the task is JSON
     rpm_limit: Optional[int] = None      # max requests/minute (free-tier throttle)
+    adaptive_throttle: bool = True       # on HTTP 429, pause ALL workers (shared
+    # cooldown gate, honours Retry-After, exponential penalty)
 
     # RAG / translation memory
     use_rag: bool = True
@@ -218,6 +220,8 @@ class PipelineConfig:
     tm_min_similarity: float = 0.82
     tm_domain: Optional[str] = None     # restrict TM search/learn to a domain
     learn: bool = True                  # store good translations back into TM
+    tm_autoexport_every: int = 0        # export fine-tune dataset every N new TM segments (0=off)
+    tm_autoexport_path: str = ""        # dataset path (default: <db_dir>/tm_dataset.jsonl)
     embedder: str = "auto"              # auto | hashing | sentence-transformers | api
     embedding_model: Optional[str] = None
     embedding_base_url: Optional[str] = None
@@ -244,6 +248,7 @@ class PipelineConfig:
     db_path: str = "data/pdftransl.db"
     output_dir: str = "data/output"
     parse_cache: bool = True            # cache parse results by PDF content hash
+    resume: bool = True                 # resume a failed job from finished segments
 
     extra: dict[str, Any] = field(default_factory=dict)
 
@@ -283,6 +288,8 @@ class PipelineConfig:
             ("PDFTRANSL_STRUCTURED_OUTPUTS", "structured_outputs"),
             ("PDFTRANSL_OCR_ON_SCAN", "ocr_on_scan"),
             ("PDFTRANSL_PARSER_FALLBACK", "parser_fallback"),
+            ("PDFTRANSL_ADAPTIVE_THROTTLE", "adaptive_throttle"),
+            ("PDFTRANSL_RESUME", "resume"),
         ):
             if env.get(flag) is not None:
                 kwargs[attr] = env[flag].strip().lower() in ("1", "true", "yes", "on")

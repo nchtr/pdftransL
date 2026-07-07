@@ -6,7 +6,7 @@ const STATUS_LABELS = {
   failed: 'ошибка',
 }
 
-export default function JobList({ jobs, selectedId, onSelect }) {
+export default function JobList({ jobs, selectedId, onSelect, onDelete }) {
   if (!jobs.length) return <p className="muted">Пока нет задач — загрузите PDF.</p>
   return (
     <ul className="job-list">
@@ -23,6 +23,18 @@ export default function JobList({ jobs, selectedId, onSelect }) {
             <span className={'badge status-' + job.status}>
               {STATUS_LABELS[job.status] || job.status}
             </span>
+            {onDelete && job.status !== 'running' && (
+              <button
+                className="ghost job-delete"
+                title="Удалить задачу и файлы"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onDelete(job.id)
+                }}
+              >
+                ✕
+              </button>
+            )}
           </div>
           <div className="job-meta">
             {job.source_lang} → {job.target_lang}

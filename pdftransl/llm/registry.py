@@ -8,7 +8,11 @@ from pdftransl.llm.base import BaseLLMClient
 from pdftransl.llm.openai_compat import OpenAICompatClient
 
 
-def create_client(config: ProviderConfig, rate_limiter=None) -> BaseLLMClient:
+def create_client(
+    config: ProviderConfig, rate_limiter=None, cooldown_gate=None
+) -> BaseLLMClient:
     if config.kind == "anthropic":
         return AnthropicClient(config)
-    return OpenAICompatClient(config, rate_limiter=rate_limiter)
+    return OpenAICompatClient(
+        config, rate_limiter=rate_limiter, cooldown_gate=cooldown_gate
+    )
