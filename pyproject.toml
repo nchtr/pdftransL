@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pdftransl"
-version = "0.3.0"
+version = "0.7.0"
 description = "Scientific PDF translation engine: parsing (LaTeX formulas, layout, figures), parallel LLM/VLM translation with self-verification, translation memory / RAG, DOCX/PDF/HTML export, Django backend, React UI, Telegram bot"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -25,7 +25,9 @@ docling = ["docling>=2.0"]
 # Neural embeddings for the translation memory (otherwise a hashing fallback is used).
 rag = ["sentence-transformers>=3.0"]
 # DOCX/PDF export engines (pandoc is an external binary, install separately).
-export = ["python-docx>=1.1", "playwright>=1.40"]
+# matplotlib renders formulas to images for readable DOCX without pandoc;
+# KaTeX for offline HTML/PDF math is vendored via the frontend npm install.
+export = ["python-docx>=1.1", "playwright>=1.40", "matplotlib>=3.7"]
 # Django backend (web API + React SPA hosting).
 backend = ["Django>=4.2", "celery>=5.3", "redis>=5.0", "gunicorn>=21.0"]
 # Telegram bot.

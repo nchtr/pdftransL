@@ -1,23 +1,50 @@
 """DOCX export via python-docx (fallback when pandoc is absent).
 
 Replicates the document structure: heading levels, paragraphs with
-bold/italic/code runs, tables, embedded images. Formulas are kept as
-literal LaTeX in a monospace style — converting LaTeX to native Word
-OMML equations is only supported through the pandoc engine.
+bold/italic/code runs, tables, embedded images. Formulas are rendered
+to images with matplotlib's mathtext when it is available, so they
+show up as actual formulas rather than raw LaTeX; without matplotlib
+(or for math outside mathtext's subset) they degrade to LaTeX text.
+pandoc remains the path to native, editable Word (OMML) equations.
 """
 
 from __future__ import annotations
 
+import io
 import re
 from pathlib import Path
 from typing import Optional
 
+from pdftransl.export.formula_render import render_latex_png, strip_math_delimiters
 from pdftransl.models import BlockType
 from pdftransl.parsing.splitter import split_markdown
 
 _INLINE_RE = re.compile(
     r"(\*\*[^*]+\*\*|\*[^*\n]+\*|`[^`]+`|\$[^$\n]+\$)"
 )
+
+# XML/Word reject control characters; strip everything except \t and \n
+_CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+
+
+def _clean(text: str) -> str:
+    return _CONTROL_RE.sub("", text)
+
+
+def _add_inline_formula(paragraph, formula: str) -> bool:
+    """Add an inline formula as a small image; return True on success."""
+    png = render_latex_png(strip_math_delimiters(formula), fontsize=12, dpi=200)
+    if png is None:
+        return False
+    try:
+        from docx.shared import Pt
+
+        run = paragraph.add_run()
+        # height tuned to sit on the text baseline (~ font size)
+        run.add_picture(io.BytesIO(png), height=Pt(13))
+        return True
+    except Exception:
+        return False
 
 
 def _add_runs(paragraph, text: str) -> None:
@@ -35,12 +62,13 @@ def _add_runs(paragraph, text: str) -> None:
             run = paragraph.add_run(part[1:-1])
             run.font.name = "Consolas"
         elif part.startswith("$") and part.endswith("$"):
-            run = paragraph.add_run(part)
-            run.font.name = "Cambria Math"
+            if not _add_inline_formula(paragraph, part):
+                run = paragraph.add_run(_clean(part))   # fallback: LaTeX text
+                run.font.name = "Cambria Math"
         else:
             # strip residual link/image syntax to plain text
             clean = re.sub(r"!?\[([^\]]*)\]\([^)]*\)", r"\1", part)
-            paragraph.add_run(clean)
+            paragraph.add_run(_clean(clean))
 
 
 def _find_image(src: str, assets_dir: Optional[Path]) -> Optional[Path]:
@@ -74,17 +102,28 @@ def export_docx(
         text = block.text
         if block.type == BlockType.HEADING:
             match = re.match(r"^(#{1,6})\s*(.*)$", text)
-            document.add_heading(match.group(2), level=min(len(match.group(1)), 9))
+            document.add_heading(_clean(match.group(2)), level=min(len(match.group(1)), 9))
         elif block.type == BlockType.MATH:
             paragraph = document.add_paragraph()
             paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            run = paragraph.add_run(text)
-            run.font.name = "Cambria Math"
-            run.font.size = Pt(10)
+            png = render_latex_png(strip_math_delimiters(text), fontsize=15, dpi=200)
+            if png is not None:
+                try:
+                    # natural size from the PNG's embedded DPI, capped at 6"
+                    pic = paragraph.add_run().add_picture(io.BytesIO(png))
+                    if pic.width > Inches(6):
+                        pic.height = int(pic.height * Inches(6) / pic.width)
+                        pic.width = Inches(6)
+                except Exception:
+                    png = None
+            if png is None:  # fallback: LaTeX text
+                run = paragraph.add_run(_clean(text))
+                run.font.name = "Cambria Math"
+                run.font.size = Pt(10)
         elif block.type == BlockType.CODE:
             body = re.sub(r"^```[^\n]*\n?|\n?```$", "", text)
             paragraph = document.add_paragraph()
-            run = paragraph.add_run(body)
+            run = paragraph.add_run(_clean(body))
             run.font.name = "Consolas"
             run.font.size = Pt(9)
         elif block.type == BlockType.TABLE:

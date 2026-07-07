@@ -83,6 +83,18 @@ export default function JobDetail({ jobId, onClose, onError }) {
       </p>
       {job.error && <p className="error-text">{job.error}</p>}
 
+      {report.scan_warning && (
+        <p className="warn-text">⚠ {report.scan_warning}</p>
+      )}
+      {report.language_warning && (
+        <p className="warn-text">⚠ {report.language_warning}</p>
+      )}
+      {report.ocr && (
+        <p className="muted">
+          Распознано OCR-страниц: {report.ocr.pages_transcribed}
+        </p>
+      )}
+
       {report.segments_translated != null && (
         <p className="muted">
           Сегментов переведено: {report.segments_translated}, проблемных:{' '}
@@ -107,6 +119,15 @@ export default function JobDetail({ jobId, onClose, onError }) {
           ))}
         </div>
       )}
+
+      {report.export_engines &&
+        Object.entries(report.export_engines)
+          .filter(([, v]) => typeof v === 'string' && v.startsWith('unavailable'))
+          .map(([fmt, reason]) => (
+            <p key={fmt} className="warn-text">
+              ⚠ {(FORMAT_TITLES[fmt] || fmt)} не собран — {reason.replace('unavailable: ', '')}
+            </p>
+          ))}
 
       {(job.status === 'completed' || job.status === 'partial') && (
         <div className="actions">

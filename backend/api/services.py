@@ -149,7 +149,7 @@ def rebuild_outputs(job: TranslationJob) -> dict:
     md_path.write_text(markdown, encoding="utf-8")
 
     config = build_config(job)
-    formats = [f for f in config.export_formats if f in ("html", "docx", "pdf")]
+    formats = [f for f in config.export_formats if f in ("html", "docx", "pdf", "latex")]
     export_result = export_document(
         markdown,
         out_base=md_path.with_suffix(""),

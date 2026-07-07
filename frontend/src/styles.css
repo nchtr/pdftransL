@@ -172,5 +172,20 @@ progress { width: 100%; height: 6px; }
   cursor: pointer;
 }
 .error-text { color: var(--err); }
+.hint {
+  font-size: 0.82rem;
+  color: var(--muted);
+  background: #f0f7ff;
+  border-radius: 6px;
+  padding: 0.4rem 0.6rem;
+  margin: 0;
+}
+.warn-text {
+  color: var(--warn);
+  background: #fffbeb;
+  border: 1px solid #fde68a;
+  border-radius: 6px;
+  padding: 0.5rem 0.7rem;
+}
 .muted { color: var(--muted); }
 footer { margin-top: 1.5rem; color: var(--muted); font-size: 0.85rem; }

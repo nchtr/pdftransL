@@ -42,6 +42,9 @@ logger = logging.getLogger(__name__)
 
 StageCb = Callable[[str, float], None]  # (stage_name, progress 0..1)
 
+# Backends that already handle scanned pages (OCR); others get scan detection.
+_OCR_BACKENDS = {"mineru_local", "mineru_api", "vlm_ocr"}
+
 
 def _build_client(config: PipelineConfig) -> BaseLLMClient:
     # one shared limiter: the whole chain respects a single rpm budget
@@ -87,6 +90,8 @@ class TranslationPipeline:
             self.retriever = None
         self.translator = Translator(self.client, self.config, self.retriever)
         self.reviewer = Reviewer(self.client, self.config) if self.config.review else None
+        self._vision_client_cached: Optional[BaseLLMClient] = None
+        self._vision_client_built = False
 
     # ------------------------------------------------------------------
     def run(
@@ -156,15 +161,65 @@ class TranslationPipeline:
     # ------------------------------------------------------------------
     def _parse(self, pdf_path: Path, workdir: Path) -> ParsedDocument:
         backend = get_backend(self.config)
+        scan: dict = {}
+
+        # A text extractor fails on two kinds of PDF: scanned (no text
+        # layer) and garbled (broken font encoding -> "кракозябры"). Both
+        # need OCR. Detect and route when a vision model is available.
+        if self.config.ocr_on_scan and backend.name not in _OCR_BACKENDS:
+            from pdftransl.parsing.scan_detect import scan_stats
+            from pdftransl.parsing.vlm_ocr_backend import VlmOcrBackend
+
+            scan = scan_stats(pdf_path)
+            if scan.get("needs_ocr"):
+                reason = "scanned" if scan.get("is_scanned") else "garbled text layer"
+                # Auto-route only to a genuinely vision-capable client, so we
+                # never send page images to a text-only model. For a local VLM
+                # (marked non-vision in presets) select --backend vlm_ocr.
+                vclient = self._vision_client()
+                if vclient is not None and getattr(vclient, "supports_vision", False):
+                    logger.info(
+                        "PDF needs OCR (%s, garbled_ratio=%.2f); routing to VLM OCR",
+                        reason, scan.get("garbled_ratio", 0),
+                    )
+                    backend = VlmOcrBackend(self.config, client=vclient)
+                else:
+                    logger.warning(
+                        "PDF needs OCR (%s) but no vision provider is available — "
+                        "output will be unreliable. Set a vision provider "
+                        "(e.g. Ollama + qwen2.5-vl), install MinerU, or pass "
+                        "--backend vlm_ocr.", reason,
+                    )
+
         cache = (
             ParseCache(self.config.output_dir) if self.config.parse_cache else None
         )
         if cache is not None:
             cached = cache.get(pdf_path, backend.name)
             if cached is not None:
+                if scan:
+                    cached.meta.setdefault("scan", scan)
                 return cached
         logger.info("Parsing %s with backend '%s'", pdf_path.name, backend.name)
         parsed = backend.parse(pdf_path, workdir)
+        if scan:
+            parsed.meta.setdefault("scan", scan)
+            if scan.get("needs_ocr") and backend.name not in _OCR_BACKENDS:
+                if scan.get("is_scanned"):
+                    detail = "appears to be scanned (no text layer)"
+                else:
+                    gr = scan.get("garbled_ratio", 0)
+                    pct = f" ({gr:.0%} unreadable glyphs)" if gr >= 0.05 else ""
+                    detail = (
+                        f"has a garbled text layer{pct} — the embedded fonts "
+                        "likely lack a Unicode map"
+                    )
+                parsed.meta["scan_warning"] = (
+                    f"PDF {detail}; extracted text is unreliable and the "
+                    "translation will be garbage. Enable OCR: set a vision "
+                    "provider (e.g. Ollama qwen2.5-vl), install MinerU, or "
+                    "pass --backend vlm_ocr."
+                )
         if cache is not None:
             try:
                 cache.put(pdf_path, parsed)
@@ -181,6 +236,12 @@ class TranslationPipeline:
         output_name: str,
     ) -> JobResult:
         cfg = self.config
+
+        # Sanity check: does the source text match the declared source
+        # language? Catches the common "forgot to flip RU<->EN" mistake.
+        from pdftransl.parsing.text_quality import language_mismatch
+
+        wrong_script = language_mismatch(parsed.markdown, cfg.source_lang)
 
         # 1. structural split; keep bibliography untranslated
         stage("split", 0.05)
@@ -265,13 +326,19 @@ class TranslationPipeline:
                         shutil.copy2(src, dst)
 
         # 9. optional VLM figure descriptions
+        figure_descriptions: dict = {}
         if cfg.describe_figures and parsed.assets:
             stage("figures", 0.82)
             vision_client = self._vision_client()
             if vision_client is not None:
-                describe_figures(
+                figure_descriptions = describe_figures(
                     parsed.assets, vision_client, cfg,
                     output_json=out_dir / "figures.json",
+                )
+            else:
+                figure_descriptions = {}
+                logger.warning(
+                    "describe_figures requested but no vision provider available"
                 )
 
         # 10. export to HTML / LaTeX / DOCX / PDF
@@ -295,8 +362,11 @@ class TranslationPipeline:
 
             render_issues = check_rendered_html(export_result["files"]["html"])
 
-        # 11. learn: push good pairs into the translation memory
-        if cfg.learn and self.tm is not None:
+        # 11. learn: push good pairs into the translation memory. Never
+        # learn from a garbled/scanned source that wasn't OCR'd — those
+        # "translations" are noise and would poison future exact-match
+        # reuse (the "retry gives the same garbage" trap).
+        if cfg.learn and self.tm is not None and not parsed.meta.get("scan_warning"):
             stage("learn", 0.95)
             learned = 0
             for segment in segments:
@@ -320,6 +390,20 @@ class TranslationPipeline:
         report["assets"] = [a.to_dict() for a in parsed.assets]
         report["references_blocks_kept"] = refs_skipped
         report["latex_issues"] = [i.to_dict() for i in latex_issues]
+        if parsed.meta.get("scan"):
+            report["scan"] = parsed.meta["scan"]
+        if parsed.meta.get("scan_warning"):
+            report["scan_warning"] = parsed.meta["scan_warning"]
+        if wrong_script:
+            report["language_warning"] = (
+                f"The document looks like {wrong_script} text, but the source "
+                f"language is set to '{cfg.source_lang}'. Check the translation "
+                "direction (source/target languages)."
+            )
+        if parsed.meta.get("ocr"):
+            report["ocr"] = {"pages_transcribed": parsed.meta.get("pages_transcribed")}
+        if figure_descriptions:
+            report["figures_described"] = len(figure_descriptions)
         if latex_fixes:
             report["latex_fixes"] = latex_fixes
         if quality_scores:
@@ -331,7 +415,12 @@ class TranslationPipeline:
             report["bilingual_markdown"] = str(bilingual_path)
         if self.translator.doc_terms:
             report["auto_glossary"] = self.translator.doc_terms
-        status = "completed" if report["segments_failed"] == 0 else "partial"
+        # A garbled/scanned source that wasn't OCR'd yields nonsense even if
+        # every segment "translated" — never report that as a clean success.
+        if report["segments_failed"] == 0 and not report.get("scan_warning"):
+            status = "completed"
+        else:
+            status = "partial"
         stage("done", 1.0)
         return JobResult(
             job_id=job_id,
@@ -344,13 +433,21 @@ class TranslationPipeline:
         )
 
     def _vision_client(self) -> Optional[BaseLLMClient]:
+        """A vision-capable client (built once, reused for OCR + figures)."""
+        if self._vision_client_built:
+            return self._vision_client_cached
+        self._vision_client_built = True
         if self.client.supports_vision and not self.config.vision_provider:
-            return self.client
-        try:
-            return create_client(self.config.vision_provider_config())
-        except Exception as exc:
-            logger.warning("Vision client unavailable: %s", exc)
-            return None
+            self._vision_client_cached = self.client
+        else:
+            try:
+                self._vision_client_cached = create_client(
+                    self.config.vision_provider_config()
+                )
+            except Exception as exc:
+                logger.warning("Vision client unavailable: %s", exc)
+                self._vision_client_cached = None
+        return self._vision_client_cached
 
 
 def _bilingual_texts(segments) -> list[str]:

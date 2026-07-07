@@ -58,7 +58,14 @@ def test_export_docx_native(tmp_path):
     document = docx.Document(docx_path)
     texts = [p.text for p in document.paragraphs]
     assert any("Заголовок статьи" in t for t in texts)
-    assert any("E = mc^2" in t for t in texts)   # formula kept as LaTeX text
+    # formulas are rendered to images when matplotlib is available,
+    # otherwise kept as LaTeX text — accept either representation
+    from pdftransl.export.formula_render import matplotlib_available
+
+    if matplotlib_available():
+        assert len(document.inline_shapes) >= 1
+    else:
+        assert any("E = mc^2" in t for t in texts)
     assert len(document.tables) == 1
     assert document.tables[0].cell(0, 0).text == "Модель"
 

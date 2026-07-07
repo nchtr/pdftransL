@@ -11,7 +11,9 @@ PyMuPDF>=1.24
 # sentence-transformers>=3.0
 # DOCX / PDF export:
 python-docx>=1.1
+matplotlib>=3.7           # renders formulas to images for readable DOCX
 # playwright>=1.40        # Chromium-based PDF rendering
+#   KaTeX for offline HTML/PDF math is vendored via `npm install` in frontend/
 # Django backend:
 Django>=4.2
 celery>=5.3

@@ -21,13 +21,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY pyproject.toml README.md ./
 COPY pdftransl/ pdftransl/
 RUN pip install --no-cache-dir -e ".[pymupdf,export,backend,bot]" weasyprint
+# Chromium for the PDF export path — renders KaTeX formulas (weasyprint
+# can't run JS, so its PDFs would show raw LaTeX). --with-deps pulls the
+# system libraries the headless browser needs.
+RUN python -m playwright install --with-deps chromium
 
 COPY backend/ backend/
 COPY bot/ bot/
 COPY --from=frontend /app/frontend/dist frontend/dist
+# KaTeX dist for offline formula rendering in HTML/PDF exports
+COPY --from=frontend /app/frontend/node_modules/katex/dist /app/vendor/katex
 
 ENV PDFTRANSL_DATA_DIR=/data \
     DJANGO_SETTINGS_MODULE=config.settings \
+    PDFTRANSL_KATEX_DIR=/app/vendor/katex \
     PYTHONUNBUFFERED=1
 
 WORKDIR /app/backend

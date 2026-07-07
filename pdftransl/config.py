@@ -104,6 +104,22 @@ PROVIDER_PRESETS: dict[str, ProviderConfig] = {
 }
 
 
+# Substrings that mark a model as multimodal (vision-capable). Lets a
+# local multimodal model (e.g. Ollama gemma3, llava, qwen2.5-vl) be used
+# for OCR / figure description without a separate vision-model setting.
+_VISION_MODEL_HINTS = (
+    "vl", "vision", "llava", "gemma3", "gemma-3", "minicpm-v", "moondream",
+    "pixtral", "internvl", "cogvlm", "idefics", "granite-vision", "-v:",
+    "llama3.2-vision", "llama-3.2-vision", "gpt-4o", "gpt-4.1", "gpt-5",
+    "claude", "gemini",
+)
+
+
+def model_supports_vision(name: Optional[str]) -> bool:
+    n = (name or "").lower()
+    return any(h in n for h in _VISION_MODEL_HINTS)
+
+
 def get_provider_config(
     provider: str,
     model: Optional[str] = None,
@@ -134,6 +150,9 @@ def get_provider_config(
         cfg.api_key = api_key
     # env overrides: PDFTRANSL_MODEL / PDFTRANSL_BASE_URL
     cfg.model = os.environ.get("PDFTRANSL_MODEL", cfg.model) if not model else cfg.model
+    # a multimodal model name implies vision even on presets marked non-vision
+    if model_supports_vision(cfg.model):
+        cfg.supports_vision = True
     return cfg
 
 
@@ -208,10 +227,16 @@ class PipelineConfig:
     vision_model: Optional[str] = None
     max_figures: int = 30
 
+    # Scanned / image-only PDFs (OCR)
+    ocr_on_scan: bool = True            # auto-route detected scans to VLM OCR
+    ocr_dpi: int = 200                  # page render resolution for OCR
+    max_ocr_pages: int = 50             # cap VLM OCR calls per document
+
     # Output
     bilingual: bool = False             # alternate source/translation paragraphs
-    export_formats: list[str] = field(default_factory=lambda: ["html"])
-    # any of: "html", "docx", "pdf" (md is always produced)
+    export_formats: list[str] = field(default_factory=lambda: ["html", "docx", "pdf"])
+    # any of: "html", "docx", "pdf", "latex" (md is always produced); a format
+    # whose engine is missing is reported in the QA report, not silently dropped
 
     # Storage
     db_path: str = "data/pdftransl.db"
@@ -234,6 +259,8 @@ class PipelineConfig:
             "PDFTRANSL_BASE_URL": "base_url",
             "PDFTRANSL_DB": "db_path",
             "PDFTRANSL_OUTPUT_DIR": "output_dir",
+            "PDFTRANSL_VISION_PROVIDER": "vision_provider",
+            "PDFTRANSL_VISION_MODEL": "vision_model",
         }
         for env_name, attr in mapping.items():
             if env.get(env_name):
@@ -252,11 +279,14 @@ class PipelineConfig:
             ("PDFTRANSL_FIX_LATEX", "fix_latex"),
             ("PDFTRANSL_RENDER_CHECK", "render_check"),
             ("PDFTRANSL_STRUCTURED_OUTPUTS", "structured_outputs"),
+            ("PDFTRANSL_OCR_ON_SCAN", "ocr_on_scan"),
         ):
             if env.get(flag) is not None:
                 kwargs[attr] = env[flag].strip().lower() in ("1", "true", "yes", "on")
         if env.get("PDFTRANSL_MAX_WORKERS"):
             kwargs["max_workers"] = int(env["PDFTRANSL_MAX_WORKERS"])
+        if env.get("PDFTRANSL_OCR_DPI"):
+            kwargs["ocr_dpi"] = int(env["PDFTRANSL_OCR_DPI"])
         if env.get("PDFTRANSL_RPM"):
             kwargs["rpm_limit"] = int(env["PDFTRANSL_RPM"])
         if env.get("PDFTRANSL_FALLBACK_PROVIDERS"):
@@ -277,9 +307,19 @@ class PipelineConfig:
         )
 
     def vision_provider_config(self) -> ProviderConfig:
-        return get_provider_config(
+        same_provider = not self.vision_provider
+        # When no dedicated vision model is set, reuse the main model —
+        # if the user runs a multimodal main model (e.g. gemma3:12b) it
+        # should handle OCR/figures, not some preset default.
+        model = self.vision_model or (self.model if same_provider else None)
+        cfg = get_provider_config(
             self.vision_provider or self.provider,
-            model=self.vision_model,
-            base_url=self.base_url if not self.vision_provider else None,
-            api_key=self.api_key if not self.vision_provider else None,
+            model=model,
+            base_url=self.base_url if same_provider else None,
+            api_key=self.api_key if same_provider else None,
         )
+        # An explicitly chosen vision provider/model signals intent — trust
+        # it even for local presets marked non-vision.
+        if self.vision_model or self.vision_provider:
+            cfg.supports_vision = True
+        return cfg

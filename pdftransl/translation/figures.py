@@ -14,13 +14,14 @@ import logging
 from pathlib import Path
 
 from pdftransl.config import PipelineConfig
-from pdftransl.llm.base import BaseLLMClient, image_content, text_content
+from pdftransl.llm.base import BaseLLMClient, vision_message
 from pdftransl.models import Asset
 from pdftransl.translation.prompts import FIGURE_SYSTEM, lang_name
 
 logger = logging.getLogger(__name__)
 
-_MAX_IMAGE_BYTES = 8 * 1024 * 1024
+# figures that can't be rasterized to a data URL for vision APIs
+_SKIP_SUFFIXES = {".svg"}
 
 
 def describe_figures(
@@ -37,23 +38,17 @@ def describe_figures(
         return {}
     system = FIGURE_SYSTEM.format(tgt=lang_name(config.target_lang))
     descriptions: dict[str, str] = {}
-    for asset in assets[: config.max_figures]:
+    # only real figures — skip full-page OCR renders exported as "page" assets
+    figures = [a for a in assets if a.kind != "page"]
+    for asset in figures[: config.max_figures]:
         path = Path(asset.path)
-        if not path.exists() or path.stat().st_size > _MAX_IMAGE_BYTES:
-            continue
-        if path.suffix.lower() == ".svg":  # data-URL vision APIs want raster
+        if not path.exists() or path.suffix.lower() in _SKIP_SUFFIXES:
             continue
         try:
             text = client.chat(
                 [
                     {"role": "system", "content": system},
-                    {
-                        "role": "user",
-                        "content": [
-                            text_content("Describe this figure."),
-                            image_content(path),
-                        ],
-                    },
+                    vision_message("Describe this figure.", path),
                 ],
                 temperature=0.2,
             )
