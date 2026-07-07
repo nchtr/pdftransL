@@ -160,48 +160,87 @@ class TranslationPipeline:
 
     # ------------------------------------------------------------------
     def _parse(self, pdf_path: Path, workdir: Path) -> ParsedDocument:
-        backend = get_backend(self.config)
+        from pdftransl.exceptions import ParserError
+        from pdftransl.parsing.base import fallback_backends
+        from pdftransl.parsing.scan_detect import scan_stats
+        from pdftransl.parsing.vlm_ocr_backend import VlmOcrBackend
+
+        primary = get_backend(self.config)
         scan: dict = {}
 
         # A text extractor fails on two kinds of PDF: scanned (no text
         # layer) and garbled (broken font encoding -> "кракозябры"). Both
         # need OCR. Detect and route when a vision model is available.
-        if self.config.ocr_on_scan and backend.name not in _OCR_BACKENDS:
-            from pdftransl.parsing.scan_detect import scan_stats
-            from pdftransl.parsing.vlm_ocr_backend import VlmOcrBackend
-
+        if self.config.ocr_on_scan and primary.name not in _OCR_BACKENDS:
             scan = scan_stats(pdf_path)
             if scan.get("needs_ocr"):
                 reason = "scanned" if scan.get("is_scanned") else "garbled text layer"
-                # Auto-route only to a genuinely vision-capable client, so we
-                # never send page images to a text-only model. For a local VLM
-                # (marked non-vision in presets) select --backend vlm_ocr.
                 vclient = self._vision_client()
                 if vclient is not None and getattr(vclient, "supports_vision", False):
                     logger.info(
                         "PDF needs OCR (%s, garbled_ratio=%.2f); routing to VLM OCR",
                         reason, scan.get("garbled_ratio", 0),
                     )
-                    backend = VlmOcrBackend(self.config, client=vclient)
+                    primary = VlmOcrBackend(self.config, client=vclient)
                 else:
                     logger.warning(
                         "PDF needs OCR (%s) but no vision provider is available — "
-                        "output will be unreliable. Set a vision provider "
-                        "(e.g. Ollama + qwen2.5-vl), install MinerU, or pass "
-                        "--backend vlm_ocr.", reason,
+                        "output will be unreliable.", reason,
                     )
+
+        # Build the attempt order: primary first, then — if enabled — the
+        # other available backends so one backend failing (e.g. MinerU
+        # timing out on a large file) doesn't sink the whole job.
+        attempts: list = [primary]
+        if self.config.parser_fallback:
+            fbs = fallback_backends(self.config, exclude=primary.name)
+            vclient = self._vision_client()
+            if (
+                getattr(vclient, "supports_vision", False)
+                and primary.name != "vlm_ocr"
+            ):
+                # VLM OCR beats PyMuPDF on scans/broken PDFs — try it first
+                ocr = VlmOcrBackend(self.config, client=vclient)
+                non_pdf = [b for b in fbs if b.name != "pymupdf"]
+                pdf_only = [b for b in fbs if b.name == "pymupdf"]
+                fbs = non_pdf + [ocr] + pdf_only
+            attempts += fbs
 
         cache = (
             ParseCache(self.config.output_dir) if self.config.parse_cache else None
         )
-        if cache is not None:
-            cached = cache.get(pdf_path, backend.name)
-            if cached is not None:
-                if scan:
-                    cached.meta.setdefault("scan", scan)
-                return cached
-        logger.info("Parsing %s with backend '%s'", pdf_path.name, backend.name)
-        parsed = backend.parse(pdf_path, workdir)
+        tried: set[str] = set()
+        errors: list[str] = []
+        for i, backend in enumerate(attempts):
+            if backend.name in tried:
+                continue
+            tried.add(backend.name)
+            if cache is not None:
+                cached = cache.get(pdf_path, backend.name)
+                if cached is not None:
+                    return self._annotate_parse(cached, scan, backend, primary)
+            logger.info("Parsing %s with backend '%s'%s", pdf_path.name, backend.name,
+                        " (fallback)" if i else "")
+            try:
+                parsed = backend.parse(pdf_path, workdir / backend.name)
+            except ParserError as exc:
+                errors.append(f"{backend.name}: {exc}")
+                logger.warning("Backend '%s' failed: %s", backend.name, exc)
+                continue
+            parsed = self._annotate_parse(parsed, scan, backend, primary, errors)
+            if cache is not None:
+                try:
+                    cache.put(pdf_path, parsed)
+                except OSError as exc:
+                    logger.warning("Parse cache write failed: %s", exc)
+            return parsed
+
+        raise ParserError(
+            "All parsing backends failed:\n  " + "\n  ".join(errors)
+        )
+
+    def _annotate_parse(self, parsed, scan, backend, primary, errors=None):
+        """Attach scan / fallback warnings to a parsed document."""
         if scan:
             parsed.meta.setdefault("scan", scan)
             if scan.get("needs_ocr") and backend.name not in _OCR_BACKENDS:
@@ -216,15 +255,14 @@ class TranslationPipeline:
                     )
                 parsed.meta["scan_warning"] = (
                     f"PDF {detail}; extracted text is unreliable and the "
-                    "translation will be garbage. Enable OCR: set a vision "
-                    "provider (e.g. Ollama qwen2.5-vl), install MinerU, or "
-                    "pass --backend vlm_ocr."
+                    "translation will be garbage. Enable OCR: use a multimodal "
+                    "model, install MinerU, or pass --backend vlm_ocr."
                 )
-        if cache is not None:
-            try:
-                cache.put(pdf_path, parsed)
-            except OSError as exc:
-                logger.warning("Parse cache write failed: %s", exc)
+        if backend.name != primary.name:
+            parsed.meta["parser_fallback"] = (
+                f"Primary parser '{primary.name}' failed; used '{backend.name}' "
+                "instead." + (f" ({errors[-1][:200]})" if errors else "")
+            )
         return parsed
 
     def _translate_parsed(
@@ -394,6 +432,8 @@ class TranslationPipeline:
             report["scan"] = parsed.meta["scan"]
         if parsed.meta.get("scan_warning"):
             report["scan_warning"] = parsed.meta["scan_warning"]
+        if parsed.meta.get("parser_fallback"):
+            report["parser_fallback"] = parsed.meta["parser_fallback"]
         if wrong_script:
             report["language_warning"] = (
                 f"The document looks like {wrong_script} text, but the source "

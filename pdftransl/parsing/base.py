@@ -42,10 +42,7 @@ def collect_assets(markdown_dir: Path, markdown: str) -> list[Asset]:
     return assets
 
 
-def get_backend(config: PipelineConfig) -> ParserBackend:
-    """Pick a parsing backend according to config ('auto' probes in order
-    of scientific-PDF quality: local MinerU -> MinerU cloud API ->
-    marker -> docling -> PyMuPDF fallback)."""
+def _all_backends(config: PipelineConfig) -> dict[str, ParserBackend]:
     from pdftransl.parsing.docling_backend import DoclingBackend
     from pdftransl.parsing.marker_backend import MarkerBackend
     from pdftransl.parsing.mineru_api import MineruApiBackend
@@ -53,31 +50,36 @@ def get_backend(config: PipelineConfig) -> ParserBackend:
     from pdftransl.parsing.pymupdf_backend import PyMuPdfBackend
     from pdftransl.parsing.vlm_ocr_backend import VlmOcrBackend
 
-    name = config.parser_backend
-    if name == "auto":
-        for backend in (
-            MineruLocalBackend(),
-            MineruApiBackend(config),
-            MarkerBackend(),
-            DoclingBackend(),
-            PyMuPdfBackend(),
-        ):
-            if backend.available():
-                return backend
-        raise ParserUnavailableError(
-            "No parsing backend available. Install MinerU (`pip install mineru`), "
-            "set MINERU_API_KEY for the cloud API, install marker-pdf/docling, "
-            "or install PyMuPDF (`pip install PyMuPDF`) as a fallback."
-        )
-
-    backends: dict[str, ParserBackend] = {
-        "mineru_local": MineruLocalBackend(),
+    return {
+        "mineru_local": MineruLocalBackend(config),
         "mineru_api": MineruApiBackend(config),
         "marker": MarkerBackend(),
         "docling": DoclingBackend(),
         "vlm_ocr": VlmOcrBackend(config),
         "pymupdf": PyMuPdfBackend(),
     }
+
+
+# order of preference for the 'auto' backend and fallback chain
+_AUTO_ORDER = ("mineru_local", "mineru_api", "marker", "docling", "pymupdf")
+
+
+def get_backend(config: PipelineConfig) -> ParserBackend:
+    """Pick a parsing backend according to config ('auto' probes in order
+    of scientific-PDF quality: local MinerU -> MinerU cloud API ->
+    marker -> docling -> PyMuPDF fallback)."""
+    backends = _all_backends(config)
+    name = config.parser_backend
+    if name == "auto":
+        for key in _AUTO_ORDER:
+            if backends[key].available():
+                return backends[key]
+        raise ParserUnavailableError(
+            "No parsing backend available. Install MinerU (`pip install mineru`), "
+            "set MINERU_API_KEY for the cloud API, install marker-pdf/docling, "
+            "or install PyMuPDF (`pip install PyMuPDF`) as a fallback."
+        )
+
     if name not in backends:
         raise ParserUnavailableError(
             f"Unknown parser backend '{name}'. Known: auto, {', '.join(backends)}."
@@ -86,6 +88,18 @@ def get_backend(config: PipelineConfig) -> ParserBackend:
     if not backend.available():
         raise ParserUnavailableError(f"Parser backend '{name}' is not available.")
     return backend
+
+
+def fallback_backends(config: PipelineConfig, exclude: str) -> list[ParserBackend]:
+    """Available parsing backends to try after ``exclude`` fails, in
+    descending quality order. ``vlm_ocr`` is intentionally left out —
+    the pipeline adds it separately only when a vision model exists."""
+    backends = _all_backends(config)
+    ordered: list[ParserBackend] = []
+    for key in _AUTO_ORDER:
+        if key != exclude and backends[key].available():
+            ordered.append(backends[key])
+    return ordered
 
 
 def parse_pdf(

@@ -13,6 +13,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from pdftransl.config import PipelineConfig
 from pdftransl.exceptions import ParserError
 from pdftransl.models import ParsedDocument
 from pdftransl.parsing.base import ParserBackend, collect_assets, mineru_cli_available
@@ -22,6 +23,9 @@ logger = logging.getLogger(__name__)
 
 class MineruLocalBackend(ParserBackend):
     name = "mineru_local"
+
+    def __init__(self, config: PipelineConfig | None = None):
+        self.config = config
 
     def available(self) -> bool:
         return mineru_cli_available()
@@ -39,14 +43,25 @@ class MineruLocalBackend(ParserBackend):
         else:  # legacy CLI name
             command = ["magic-pdf", "-p", str(pdf_path), "-o", str(workdir)]
 
-        logger.info("Running MinerU: %s", " ".join(command))
+        timeout = getattr(self.config, "parser_timeout", 1800) if self.config else 1800
+        logger.info("Running MinerU (timeout %ss): %s", timeout, " ".join(command))
         try:
-            subprocess.run(command, check=True, capture_output=True, text=True)
+            subprocess.run(
+                command, check=True, capture_output=True, text=True, timeout=timeout
+            )
         except FileNotFoundError as exc:
             raise ParserError(f"MinerU CLI not found: {exc}") from exc
-        except subprocess.CalledProcessError as exc:
+        except subprocess.TimeoutExpired as exc:
             raise ParserError(
-                f"MinerU failed (exit {exc.returncode}): {exc.stderr[-2000:] if exc.stderr else exc}"
+                f"MinerU timed out after {timeout}s — the file is large and MinerU "
+                "is slow on CPU (no CUDA). Try a smaller file, raise "
+                "PDFTRANSL_PARSER_TIMEOUT, or use a lighter backend "
+                "(--backend marker / vlm_ocr / pymupdf)."
+            ) from exc
+        except subprocess.CalledProcessError as exc:
+            tail = (exc.stderr or "")[-1500:]
+            raise ParserError(
+                f"MinerU failed (exit {exc.returncode}): {tail or exc}"
             ) from exc
 
         md_files = sorted(
