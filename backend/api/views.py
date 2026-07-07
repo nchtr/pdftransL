@@ -30,8 +30,24 @@ from pdftransl.rag.store import TranslationMemory
 from pdftransl.translation.prompts import LANG_NAMES
 
 from . import services
-from .models import SegmentRecord, TranslationJob
+from .models import SegmentRecord, ServerConfig, TranslationJob
 from .tasks import dispatch_job
+
+# keys the web UI may store as runtime server defaults (value type for
+# light validation; None value in a PUT removes the override)
+_SETTING_TYPES: dict[str, type] = {
+    "provider": str, "model": str, "vision_provider": str, "vision_model": str,
+    "source_lang": str, "target_lang": str, "parser_backend": str,
+    "domain": str, "fallback_providers": list, "formats": list,
+    "max_workers": int, "rpm_limit": int, "parser_timeout": int, "ocr_dpi": int,
+    "review": bool, "use_rag": bool, "learn": bool, "bilingual": bool,
+    "describe_figures": bool, "backtranslation_check": bool,
+    "doc_summary": bool, "auto_glossary": bool, "skip_references": bool,
+    "quality_score": bool, "fix_latex": bool, "render_check": bool,
+    "structured_outputs": bool, "ocr_on_scan": bool, "parser_fallback": bool,
+    "adaptive_throttle": bool, "parse_cache": bool,
+    "log_level": str,
+}
 
 _CONTENT_TYPES = {
     "md": "text/markdown; charset=utf-8",
@@ -122,9 +138,32 @@ def jobs(request):
     )
 
 
-@require_GET
+@csrf_exempt
+@require_http_methods(["GET", "DELETE"])
 def job_detail(request, job_id):
-    return JsonResponse(_job_or_404(job_id).as_dict())
+    job = _job_or_404(job_id)
+    if request.method == "GET":
+        return JsonResponse(job.as_dict())
+
+    # DELETE: remove the job row, its uploaded PDF and its output dir
+    if job.status == TranslationJob.Status.RUNNING:
+        return JsonResponse({"error": "job is running; wait for it to finish"},
+                            status=409)
+    import shutil
+
+    output_root = Path(settings.PDFTRANSL_OUTPUT_DIR).resolve()
+    md = (job.outputs or {}).get("md")
+    if md:
+        out_dir = Path(md).resolve().parent
+        # never delete outside the configured output root
+        if out_dir.exists() and str(out_dir).startswith(str(output_root)):
+            shutil.rmtree(out_dir, ignore_errors=True)
+    try:
+        job.pdf.delete(save=False)
+    except Exception:
+        pass
+    job.delete()
+    return JsonResponse({"deleted": True})
 
 
 @require_GET
@@ -255,7 +294,7 @@ def providers(request):
 
 
 @csrf_exempt
-@require_http_methods(["GET", "POST"])
+@require_http_methods(["GET", "POST", "DELETE"])
 def glossary(request):
     config = _engine_config()
     store = Glossary(config.db_path)
@@ -263,15 +302,21 @@ def glossary(request):
         return JsonResponse({"terms": store.list_all()})
     try:
         body = json.loads(request.body)
+    except ValueError:
+        return JsonResponse({"error": "expected a JSON body"}, status=400)
+    src = body.get("source_lang", config.source_lang)
+    tgt = body.get("target_lang", config.target_lang)
+    if request.method == "DELETE":
+        term = body.get("term")
+        if not term:
+            return JsonResponse({"error": "expected JSON {term}"}, status=400)
+        removed = store.remove(term, src, tgt)
+        return JsonResponse({"removed": removed})
+    try:
         term, translation = body["term"], body["translation"]
-    except (ValueError, KeyError):
+    except KeyError:
         return JsonResponse({"error": "expected JSON {term, translation}"}, status=400)
-    store.add(
-        term, translation,
-        body.get("source_lang", config.source_lang),
-        body.get("target_lang", config.target_lang),
-        body.get("notes"),
-    )
+    store.add(term, translation, src, tgt, body.get("notes"))
     return JsonResponse({"ok": True}, status=201)
 
 
@@ -280,6 +325,84 @@ def tm_stats(request):
     config = _engine_config()
     tm = TranslationMemory(config.db_path, get_embedder(config))
     return JsonResponse(tm.stats())
+
+
+# --- runtime server settings ------------------------------------------------
+
+
+@csrf_exempt
+@require_http_methods(["GET", "PUT"])
+def server_settings(request):
+    """Runtime defaults applied to every new job — editable from the web
+    UI with no server restart. Per-job options still override these."""
+    config_row = ServerConfig.load()
+
+    if request.method == "GET":
+        defaults = PipelineConfig.from_env()
+        return JsonResponse({
+            "settings": config_row.data or {},
+            "defaults": {
+                "provider": defaults.provider,
+                "model": defaults.model or "",
+                "vision_model": defaults.vision_model or "",
+                "parser_backend": defaults.parser_backend,
+                "parser_timeout": defaults.parser_timeout,
+                "max_workers": defaults.max_workers,
+                "rpm_limit": defaults.rpm_limit or 0,
+                "formats": defaults.export_formats,
+                "ocr_on_scan": defaults.ocr_on_scan,
+                "log_level": settings.PDFTRANSL_LOG_LEVEL,
+            },
+            "editable": sorted(_SETTING_TYPES),
+        })
+
+    try:
+        body = json.loads(request.body)
+        if not isinstance(body, dict):
+            raise ValueError
+    except ValueError:
+        return JsonResponse({"error": "expected a JSON object"}, status=400)
+
+    data = dict(config_row.data or {})
+    errors = {}
+    for key, value in body.items():
+        if key not in _SETTING_TYPES:
+            errors[key] = "unknown setting"
+            continue
+        if value is None or value == "":
+            data.pop(key, None)      # null/empty removes the override
+            continue
+        expected = _SETTING_TYPES[key]
+        try:
+            if expected is bool:
+                value = value if isinstance(value, bool) else str(value).lower() in ("1", "true", "yes", "on")
+            elif expected is int:
+                value = int(value)
+            elif expected is list:
+                if isinstance(value, str):
+                    value = [v.strip() for v in value.split(",") if v.strip()]
+                value = list(value)
+            else:
+                value = str(value)
+        except (TypeError, ValueError):
+            errors[key] = f"expected {expected.__name__}"
+            continue
+        data[key] = value
+    if errors:
+        return JsonResponse({"error": "invalid settings", "details": errors}, status=400)
+
+    # log level applies immediately, process-wide
+    if "log_level" in data:
+        from pdftransl.logging_setup import set_level
+
+        try:
+            data["log_level"] = set_level(data["log_level"])
+        except ValueError as exc:
+            return JsonResponse({"error": str(exc)}, status=400)
+
+    config_row.data = data
+    config_row.save()
+    return JsonResponse({"settings": data})
 
 
 # --- SPA ---------------------------------------------------------------------

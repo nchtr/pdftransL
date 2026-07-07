@@ -127,9 +127,9 @@ def _config_from_args(args: argparse.Namespace) -> PipelineConfig:
 
 
 def main(argv: list[str] | None = None) -> int:
-    logging.basicConfig(
-        level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
-    )
+    from pdftransl.logging_setup import setup_logging
+
+    setup_logging()   # PDFTRANSL_LOG_LEVEL / PDFTRANSL_LOG_FILE
     parser = argparse.ArgumentParser(
         prog="pdftransl", description="Scientific PDF translation engine"
     )

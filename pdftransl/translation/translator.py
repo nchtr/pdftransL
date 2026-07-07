@@ -105,6 +105,8 @@ class Translator:
         if segment.kind != "translate":
             return segment
 
+        import time as _time
+        started = _time.monotonic()
         cfg = self.config
         if self.retriever is not None:
             context = self.retriever.build(segment.source_text)
@@ -117,6 +119,8 @@ class Translator:
                 segment.issues.append(
                     QAIssue("tm_exact", "reused exact translation-memory match", "info")
                 )
+                logger.debug("segment %s: exact TM hit (%d chars)",
+                             segment.id, len(segment.source_text))
                 return segment
 
         # Per-document terms + stored glossary hits found in this segment.
@@ -170,6 +174,13 @@ class Translator:
             segment.attempts += 1
             self._finalize(segment, raw)
 
+        logger.debug(
+            "segment %s: %d chars, %d placeholders, %d attempt(s), "
+            "%d issue(s), %.1fs%s",
+            segment.id, len(segment.source_text), len(segment.placeholders),
+            segment.attempts, len(segment.issues),
+            _time.monotonic() - started, "" if segment.ok else " [FAILED]",
+        )
         return segment
 
     def _finalize(self, segment: Segment, raw_translation: str) -> None:

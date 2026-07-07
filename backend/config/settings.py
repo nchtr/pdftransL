@@ -114,3 +114,43 @@ CORS_ALLOWED_ORIGINS = [
     ).split(",")
     if o.strip()
 ]
+
+# --- logging ----------------------------------------------------------------
+# PDFTRANSL_LOG_LEVEL=DEBUG makes the running server log everything the
+# engine does: every LLM call with sizes/timing, parser and export engine
+# decisions, per-segment progress. PDFTRANSL_LOG_FILE mirrors to a file.
+PDFTRANSL_LOG_LEVEL = os.environ.get("PDFTRANSL_LOG_LEVEL", "INFO").strip().upper()
+if PDFTRANSL_LOG_LEVEL not in ("DEBUG", "INFO", "WARNING", "ERROR"):
+    PDFTRANSL_LOG_LEVEL = "INFO"
+PDFTRANSL_LOG_FILE = os.environ.get("PDFTRANSL_LOG_FILE", "").strip()
+
+_log_handlers = ["console"] + (["file"] if PDFTRANSL_LOG_FILE else [])
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "verbose": {"format": "%(asctime)s %(levelname)-7s %(name)s: %(message)s"},
+    },
+    "handlers": {
+        "console": {"class": "logging.StreamHandler", "formatter": "verbose"},
+        **({"file": {
+            "class": "logging.handlers.RotatingFileHandler",
+            "filename": PDFTRANSL_LOG_FILE,
+            "maxBytes": 10 * 1024 * 1024,
+            "backupCount": 3,
+            "encoding": "utf-8",
+            "formatter": "verbose",
+        }} if PDFTRANSL_LOG_FILE else {}),
+    },
+    "root": {"handlers": _log_handlers, "level": PDFTRANSL_LOG_LEVEL},
+    "loggers": {
+        "pdftransl": {"level": PDFTRANSL_LOG_LEVEL, "propagate": True},
+        "api": {"level": PDFTRANSL_LOG_LEVEL, "propagate": True},
+        # keep framework noise moderate even in DEBUG
+        "django": {"level": "INFO", "propagate": True},
+        "urllib3": {"level": "INFO", "propagate": True},
+        "PIL": {"level": "INFO", "propagate": True},
+        "matplotlib": {"level": "INFO", "propagate": True},
+        "fontTools": {"level": "INFO", "propagate": True},
+    },
+}

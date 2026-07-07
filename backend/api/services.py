@@ -16,41 +16,69 @@ from pdftransl.rag.glossary import Glossary
 from pdftransl.rag.store import TranslationMemory
 from pdftransl.service import looks_like_term
 
-from .models import SegmentRecord, TranslationJob
+from .models import SegmentRecord, ServerConfig, TranslationJob
 
 logger = logging.getLogger(__name__)
 
+# option keys shared by per-job options AND runtime server settings
+_BOOL_KEYS = (
+    "review", "use_rag", "learn", "bilingual", "describe_figures",
+    "backtranslation_check", "doc_summary", "auto_glossary",
+    "skip_references", "quality_score", "fix_latex", "render_check",
+    "structured_outputs", "ocr_on_scan", "parser_fallback",
+    "adaptive_throttle", "parse_cache",
+)
+_STR_KEYS = (
+    "provider", "model", "vision_provider", "vision_model",
+    "parser_backend", "domain", "source_lang", "target_lang",
+)
+_INT_KEYS = ("max_workers", "rpm_limit", "parser_timeout", "ocr_dpi")
+
+
+def _apply_options(overrides: dict, options: dict) -> None:
+    """Map an options dict (job options or runtime settings) onto
+    PipelineConfig overrides. Unknown keys are ignored."""
+    for key in _BOOL_KEYS:
+        if key in options and options[key] is not None:
+            overrides[key] = bool(options[key])
+    for key in _STR_KEYS:
+        if options.get(key):
+            target = "tm_domain" if key == "domain" else key
+            overrides[target] = str(options[key])
+    for key in _INT_KEYS:
+        if options.get(key):
+            overrides[key] = int(options[key])
+    if options.get("formats"):
+        overrides["export_formats"] = list(options["formats"])
+    if options.get("fallback_providers"):
+        value = options["fallback_providers"]
+        if isinstance(value, str):
+            value = [p.strip() for p in value.split(",") if p.strip()]
+        overrides["fallback_providers"] = list(value)
+
+
+def runtime_settings() -> dict:
+    """Server-wide defaults saved from the web UI (may be empty)."""
+    try:
+        return dict(ServerConfig.load().data or {})
+    except Exception:  # e.g. before migrations have run
+        return {}
+
 
 def build_config(job: TranslationJob) -> PipelineConfig:
-    options = job.options or {}
     overrides: dict = {
-        "source_lang": job.source_lang,
-        "target_lang": job.target_lang,
         "db_path": settings.PDFTRANSL_DB,
         "output_dir": settings.PDFTRANSL_OUTPUT_DIR,
     }
+    # precedence: env defaults < runtime server settings < per-job options
+    _apply_options(overrides, runtime_settings())
+    overrides["source_lang"] = job.source_lang
+    overrides["target_lang"] = job.target_lang
     if job.provider:
         overrides["provider"] = job.provider
     if job.model:
         overrides["model"] = job.model
-    for key in (
-        "review", "use_rag", "learn", "bilingual", "describe_figures",
-        "backtranslation_check", "doc_summary", "auto_glossary",
-        "skip_references", "quality_score", "fix_latex", "render_check",
-        "structured_outputs",
-    ):
-        if key in options:
-            overrides[key] = bool(options[key])
-    if options.get("formats"):
-        overrides["export_formats"] = list(options["formats"])
-    if options.get("max_workers"):
-        overrides["max_workers"] = int(options["max_workers"])
-    if options.get("rpm_limit"):
-        overrides["rpm_limit"] = int(options["rpm_limit"])
-    if options.get("fallback_providers"):
-        overrides["fallback_providers"] = list(options["fallback_providers"])
-    if options.get("domain"):
-        overrides["tm_domain"] = str(options["domain"])
+    _apply_options(overrides, job.options or {})
     return PipelineConfig.from_env(**overrides)
 
 

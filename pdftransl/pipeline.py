@@ -47,13 +47,22 @@ _OCR_BACKENDS = {"mineru_local", "mineru_api", "vlm_ocr"}
 
 
 def _build_client(config: PipelineConfig) -> BaseLLMClient:
-    # one shared limiter: the whole chain respects a single rpm budget
+    # shared throttles: the whole chain respects one rpm budget and one
+    # 429 cooldown — a rate-limited provider pauses every worker at once
     rate_limiter = None
     if config.rpm_limit:
         from pdftransl.llm.ratelimit import RateLimiter
 
         rate_limiter = RateLimiter(config.rpm_limit)
-    primary = create_client(config.provider_config(), rate_limiter=rate_limiter)
+    cooldown_gate = None
+    if config.adaptive_throttle:
+        from pdftransl.llm.ratelimit import CooldownGate
+
+        cooldown_gate = CooldownGate()
+    primary = create_client(
+        config.provider_config(),
+        rate_limiter=rate_limiter, cooldown_gate=cooldown_gate,
+    )
     if not config.fallback_providers:
         return primary
     chain = [primary]
@@ -61,9 +70,10 @@ def _build_client(config: PipelineConfig) -> BaseLLMClient:
         if name == config.provider:
             continue
         try:
-            chain.append(
-                create_client(get_provider_config(name), rate_limiter=rate_limiter)
-            )
+            chain.append(create_client(
+                get_provider_config(name),
+                rate_limiter=rate_limiter, cooldown_gate=cooldown_gate,
+            ))
         except Exception as exc:
             logger.warning("Fallback provider %s unavailable: %s", name, exc)
     return FallbackClient(chain) if len(chain) > 1 else primary

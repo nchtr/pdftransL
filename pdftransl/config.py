@@ -211,6 +211,8 @@ class PipelineConfig:
     # Provider behaviour
     structured_outputs: bool = False     # ask for JSON mode where the task is JSON
     rpm_limit: Optional[int] = None      # max requests/minute (free-tier throttle)
+    adaptive_throttle: bool = True       # on HTTP 429, pause ALL workers (shared
+    # cooldown gate, honours Retry-After, exponential penalty)
 
     # RAG / translation memory
     use_rag: bool = True
@@ -283,6 +285,7 @@ class PipelineConfig:
             ("PDFTRANSL_STRUCTURED_OUTPUTS", "structured_outputs"),
             ("PDFTRANSL_OCR_ON_SCAN", "ocr_on_scan"),
             ("PDFTRANSL_PARSER_FALLBACK", "parser_fallback"),
+            ("PDFTRANSL_ADAPTIVE_THROTTLE", "adaptive_throttle"),
         ):
             if env.get(flag) is not None:
                 kwargs[attr] = env[flag].strip().lower() in ("1", "true", "yes", "on")

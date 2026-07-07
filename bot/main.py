@@ -247,7 +247,9 @@ async def on_text(message: Message) -> None:
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO)
+    from pdftransl.logging_setup import setup_logging
+
+    setup_logging()   # PDFTRANSL_LOG_LEVEL / PDFTRANSL_LOG_FILE
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
     if not token:
         raise SystemExit("Set TELEGRAM_BOT_TOKEN")
