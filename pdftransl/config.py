@@ -165,9 +165,11 @@ class PipelineConfig:
     target_lang: str = "ru"
 
     # Parsing
-    parser_backend: str = "auto"        # auto | mineru_local | mineru_api | pymupdf
+    parser_backend: str = "auto"        # auto | mineru_local | mineru_api | marker | docling | vlm_ocr | pymupdf
     mineru_api_base: str = "https://mineru.net/api/v4"
     mineru_api_key_env: str = "MINERU_API_KEY"
+    parser_timeout: int = 1800          # seconds before a local parser is killed
+    parser_fallback: bool = True        # fall back to another backend if one fails
 
     # Translation provider
     provider: str = "openrouter"
@@ -280,11 +282,14 @@ class PipelineConfig:
             ("PDFTRANSL_RENDER_CHECK", "render_check"),
             ("PDFTRANSL_STRUCTURED_OUTPUTS", "structured_outputs"),
             ("PDFTRANSL_OCR_ON_SCAN", "ocr_on_scan"),
+            ("PDFTRANSL_PARSER_FALLBACK", "parser_fallback"),
         ):
             if env.get(flag) is not None:
                 kwargs[attr] = env[flag].strip().lower() in ("1", "true", "yes", "on")
         if env.get("PDFTRANSL_MAX_WORKERS"):
             kwargs["max_workers"] = int(env["PDFTRANSL_MAX_WORKERS"])
+        if env.get("PDFTRANSL_PARSER_TIMEOUT"):
+            kwargs["parser_timeout"] = int(env["PDFTRANSL_PARSER_TIMEOUT"])
         if env.get("PDFTRANSL_OCR_DPI"):
             kwargs["ocr_dpi"] = int(env["PDFTRANSL_OCR_DPI"])
         if env.get("PDFTRANSL_RPM"):

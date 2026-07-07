@@ -89,6 +89,9 @@ export default function JobDetail({ jobId, onClose, onError }) {
       {report.language_warning && (
         <p className="warn-text">⚠ {report.language_warning}</p>
       )}
+      {report.parser_fallback && (
+        <p className="warn-text">⚠ {report.parser_fallback}</p>
+      )}
       {report.ocr && (
         <p className="muted">
           Распознано OCR-страниц: {report.ocr.pages_transcribed}
