@@ -104,6 +104,22 @@ PROVIDER_PRESETS: dict[str, ProviderConfig] = {
 }
 
 
+# Substrings that mark a model as multimodal (vision-capable). Lets a
+# local multimodal model (e.g. Ollama gemma3, llava, qwen2.5-vl) be used
+# for OCR / figure description without a separate vision-model setting.
+_VISION_MODEL_HINTS = (
+    "vl", "vision", "llava", "gemma3", "gemma-3", "minicpm-v", "moondream",
+    "pixtral", "internvl", "cogvlm", "idefics", "granite-vision", "-v:",
+    "llama3.2-vision", "llama-3.2-vision", "gpt-4o", "gpt-4.1", "gpt-5",
+    "claude", "gemini",
+)
+
+
+def model_supports_vision(name: Optional[str]) -> bool:
+    n = (name or "").lower()
+    return any(h in n for h in _VISION_MODEL_HINTS)
+
+
 def get_provider_config(
     provider: str,
     model: Optional[str] = None,
@@ -134,6 +150,9 @@ def get_provider_config(
         cfg.api_key = api_key
     # env overrides: PDFTRANSL_MODEL / PDFTRANSL_BASE_URL
     cfg.model = os.environ.get("PDFTRANSL_MODEL", cfg.model) if not model else cfg.model
+    # a multimodal model name implies vision even on presets marked non-vision
+    if model_supports_vision(cfg.model):
+        cfg.supports_vision = True
     return cfg
 
 
@@ -288,15 +307,19 @@ class PipelineConfig:
         )
 
     def vision_provider_config(self) -> ProviderConfig:
+        same_provider = not self.vision_provider
+        # When no dedicated vision model is set, reuse the main model —
+        # if the user runs a multimodal main model (e.g. gemma3:12b) it
+        # should handle OCR/figures, not some preset default.
+        model = self.vision_model or (self.model if same_provider else None)
         cfg = get_provider_config(
             self.vision_provider or self.provider,
-            model=self.vision_model,
-            base_url=self.base_url if not self.vision_provider else None,
-            api_key=self.api_key if not self.vision_provider else None,
+            model=model,
+            base_url=self.base_url if same_provider else None,
+            api_key=self.api_key if same_provider else None,
         )
-        # An explicitly chosen vision model signals intent — trust it as
-        # vision-capable even for local presets marked non-vision, so
-        # scanned PDFs auto-route to OCR (e.g. ollama + qwen2.5-vl).
+        # An explicitly chosen vision provider/model signals intent — trust
+        # it even for local presets marked non-vision.
         if self.vision_model or self.vision_provider:
             cfg.supports_vision = True
         return cfg

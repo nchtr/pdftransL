@@ -110,3 +110,39 @@ def test_pdf_reports_reason_when_no_engine(tmp_path, monkeypatch):
 def test_default_export_formats():
     cfg = PipelineConfig()
     assert cfg.export_formats == ["html", "docx", "pdf"]
+
+
+# ---- multimodal main-model detection ------------------------------------
+
+def test_model_supports_vision_heuristic():
+    from pdftransl.config import model_supports_vision
+
+    for m in ("gemma3:12b", "llava:13b", "qwen2.5-vl:7b", "llama3.2-vision",
+              "minicpm-v", "gpt-4o-mini", "claude-sonnet-5"):
+        assert model_supports_vision(m), m
+    for m in ("qwen2.5:14b", "llama3.1:8b", "mistral:7b", "deepseek-chat"):
+        assert not model_supports_vision(m), m
+
+
+def test_multimodal_main_model_is_vision_capable():
+    # a user running a multimodal main model (no separate vision model)
+    cfg = PipelineConfig(provider="ollama", model="gemma3:12b")
+    assert cfg.provider_config().supports_vision is True
+    vc = cfg.vision_provider_config()
+    assert vc.supports_vision is True
+    assert vc.model == "gemma3:12b"          # OCR reuses the main model
+
+
+def test_text_only_local_model_not_vision():
+    cfg = PipelineConfig(provider="ollama", model="qwen2.5:14b")
+    assert cfg.provider_config().supports_vision is False
+
+
+def test_vision_config_reuses_main_model_when_unset():
+    cfg = PipelineConfig(provider="ollama", model="gemma3:12b", vision_model=None)
+    assert cfg.vision_provider_config().model == "gemma3:12b"
+    # explicit vision model still wins
+    cfg2 = PipelineConfig(provider="ollama", model="qwen2.5:14b",
+                          vision_model="llava:13b")
+    vc = cfg2.vision_provider_config()
+    assert vc.model == "llava:13b" and vc.supports_vision

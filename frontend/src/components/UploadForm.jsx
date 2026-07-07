@@ -101,12 +101,16 @@ export default function UploadForm({ meta, onSubmitted, onError }) {
           Модель (необязательно)
           <input
             type="text"
-            placeholder="например qwen2.5:14b"
+            placeholder="например qwen2.5:14b или gemma3:12b"
             value={model}
             onChange={(e) => setModel(e.target.value)}
           />
         </label>
       </div>
+      <p className="hint">
+        💡 Мультимодальная модель (gemma3, llava, *-vl, llama3.2-vision…)
+        сама распознаёт сканы и PDF с битым текстовым слоем через OCR.
+      </p>
 
       <fieldset>
         <legend>Форматы результата (markdown — всегда)</legend>

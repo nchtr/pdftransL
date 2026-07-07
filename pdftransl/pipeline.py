@@ -362,8 +362,11 @@ class TranslationPipeline:
 
             render_issues = check_rendered_html(export_result["files"]["html"])
 
-        # 11. learn: push good pairs into the translation memory
-        if cfg.learn and self.tm is not None:
+        # 11. learn: push good pairs into the translation memory. Never
+        # learn from a garbled/scanned source that wasn't OCR'd — those
+        # "translations" are noise and would poison future exact-match
+        # reuse (the "retry gives the same garbage" trap).
+        if cfg.learn and self.tm is not None and not parsed.meta.get("scan_warning"):
             stage("learn", 0.95)
             learned = 0
             for segment in segments:
