@@ -184,12 +184,12 @@ async def on_document(message: Message, bot: Bot) -> None:
                 )
 
         def run():
+            # service.process (not pipeline.run directly) keeps the shared
+            # job repository honest: status/progress get persisted, so
+            # `pdftransl jobs` doesn't show bot jobs stuck as "queued".
             service = TranslationService(_pipeline_config(settings))
             job_id = service.submit(str(pdf_path))
-            job = service.repo.get(job_id)
-            return service.pipeline.run(
-                job["pdf_path"], job["output_dir"], job_id=job_id, on_stage=on_stage
-            )
+            return service.process(job_id, on_stage=on_stage)
 
         try:
             result = await asyncio.to_thread(run)

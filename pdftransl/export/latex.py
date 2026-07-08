@@ -34,19 +34,20 @@ _SECTION_BY_LEVEL = {
     4: "paragraph", 5: "subparagraph", 6: "subparagraph",
 }
 
-# characters that must be escaped in LaTeX text mode
-_ESCAPES = [
-    ("\\", r"\textbackslash{}"),
-    ("&", r"\&"), ("%", r"\%"), ("#", r"\#"),
-    ("_", r"\_"), ("{", r"\{"), ("}", r"\}"),
-    ("~", r"\textasciitilde{}"), ("^", r"\textasciicircum{}"),
-]
+# characters that must be escaped in LaTeX text mode; replaced in ONE
+# regex pass — sequential str.replace re-escaped the braces inserted by
+# earlier replacements ("\" became "\textbackslash\{\}")
+_ESCAPE_MAP = {
+    "\\": r"\textbackslash{}",
+    "&": r"\&", "%": r"\%", "#": r"\#",
+    "_": r"\_", "{": r"\{", "}": r"\}",
+    "~": r"\textasciitilde{}", "^": r"\textasciicircum{}",
+}
+_ESCAPE_RE = re.compile(r"[\\&%#_{}~^]")
 
 
 def _escape_text(text: str) -> str:
-    for char, replacement in _ESCAPES:
-        text = text.replace(char, replacement)
-    return text
+    return _ESCAPE_RE.sub(lambda m: _ESCAPE_MAP[m.group(0)], text)
 
 
 def _inline_to_latex(text: str) -> str:

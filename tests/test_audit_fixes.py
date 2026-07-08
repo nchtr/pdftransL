@@ -144,6 +144,62 @@ def test_reviewer_still_rejects_revision_losing_content():
     assert any(i.code == "review_rejected" for i in seg.issues)
 
 
+# ---- 6. LaTeX text escaping is single-pass -----------------------------------
+
+def test_latex_escape_backslash_not_double_mangled():
+    from pdftransl.export.latex import _escape_text
+
+    out = _escape_text(r"path C:\data and 5% of A_1 {x}")
+    assert out == r"path C:\textbackslash{}data and 5\% of A\_1 \{x\}"
+
+
+def test_latex_export_escapes_title_and_prose(tmp_path):
+    from pdftransl.export.latex import markdown_to_latex
+
+    tex = markdown_to_latex("# T\n\nGain of 100%_done & more.\n", title="A_B & C")
+    assert r"\title{A\_B \& C}" in tex
+    assert r"100\%\_done \& more" in tex
+
+
+# ---- 7. service.process persists status with an external callback -----------
+
+def test_service_process_updates_repo_with_external_callback(tmp_path):
+    import re
+
+    from pdftransl.config import PipelineConfig
+    from pdftransl.llm.fake import FakeLLMClient
+    from pdftransl.pipeline import TranslationPipeline
+    from pdftransl.service import TranslationService
+
+    md_path = tmp_path / "doc.md"
+
+    def fake(masked):
+        return re.sub(r"[A-Za-z]+", lambda m: "текст", masked)
+
+    cfg = PipelineConfig(
+        db_path=str(tmp_path / "db.sqlite"), output_dir=str(tmp_path / "out"),
+        review=False, doc_summary=False, auto_glossary=False, learn=False,
+        export_formats=[], embedder="hashing", use_rag=False,
+    )
+    pipeline = TranslationPipeline(cfg, client=FakeLLMClient(transform=fake))
+    service = TranslationService(cfg, pipeline=pipeline)
+
+    # a tiny "pdf": use translate_markdown path via a real pdf-less submit
+    import fitz
+    pdf = tmp_path / "d.pdf"
+    doc = fitz.open(); page = doc.new_page()
+    page.insert_text((72, 72), "Short English paragraph to translate here.")
+    doc.save(str(pdf)); doc.close()
+
+    seen = []
+    job_id = service.submit(str(pdf), str(tmp_path / "out"))
+    result = service.process(job_id, on_stage=lambda s, p: seen.append((s, p)))
+    assert result.status in ("completed", "partial")
+    assert seen, "external callback must be invoked"
+    row = service.status(job_id)
+    assert row["status"] == result.status  # repo row not stuck as queued
+
+
 # ---- 5. no stray .html when only other formats requested --------------------
 
 def test_export_no_stray_html(tmp_path):
