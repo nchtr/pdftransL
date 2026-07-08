@@ -1,4 +1,8 @@
-"""Exception hierarchy for pdftransl."""
+"""Иерархия исключений pdftransl.
+
+Всё наследуется от PdftranslError, чтобы интеграции могли ловить одно
+исключение; парсинг и LLM разведены по своим веткам.
+"""
 
 
 class PdfTranslError(Exception):

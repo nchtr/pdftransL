@@ -1,3 +1,5 @@
+// Список задач: статус-бейджи, стадия с процентом, ETA, прогресс-бар,
+// удаление. Данные приходят сверху из App (SSE).
 import { formatEta } from '../format.js'
 
 const STATUS_LABELS = {

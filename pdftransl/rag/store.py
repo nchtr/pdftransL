@@ -1,13 +1,10 @@
-"""Translation memory (TM) — the "learning" storage.
+"""Память переводов (TM) — «обучаемое» хранилище.
 
-Every approved segment translation is stored with its embedding.
-Future documents retrieve similar past segments as few-shot examples
-(RAG) and reuse exact matches directly. Human corrections added via
-``origin='human'`` take priority over automatic entries.
-
-SQLite keeps everything in one file; vectors are stored as JSON blobs
-and compared in Python — fine up to tens of thousands of segments.
-Swap in sqlite-vec/pgvector/Qdrant behind the same interface to scale.
+Каждый удачный перевод сегмента сохраняется с эмбеддингом. Новые
+документы получают: точные совпадения бесплатно (human-правки
+приоритетнее авто), похожие сегменты как few-shot примеры (косинус,
+numpy fast-path, доменный фильтр). SQLite в одном файле; за тем же
+интерфейсом легко поставить pgvector/Qdrant.
 """
 
 from __future__ import annotations

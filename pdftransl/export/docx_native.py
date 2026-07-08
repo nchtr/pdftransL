@@ -1,11 +1,8 @@
-"""DOCX export via python-docx (fallback when pandoc is absent).
+"""DOCX без pandoc: python-docx.
 
-Replicates the document structure: heading levels, paragraphs with
-bold/italic/code runs, tables, embedded images. Formulas are rendered
-to images with matplotlib's mathtext when it is available, so they
-show up as actual formulas rather than raw LaTeX; without matplotlib
-(or for math outside mathtext's subset) they degrade to LaTeX text.
-pandoc remains the path to native, editable Word (OMML) equations.
+Формулы рендерятся картинками через matplotlib mathtext — в документе
+видна настоящая формула, а не сырой $...$; что mathtext не осилил —
+падает обратно в текст.
 """
 
 from __future__ import annotations

@@ -1,12 +1,9 @@
-"""Client for any OpenAI-compatible /chat/completions endpoint.
+"""Клиент любого OpenAI-совместимого /chat/completions.
 
-Covers OpenAI, OpenRouter, DeepSeek and local servers (Ollama, vLLM,
-LM Studio, llama.cpp server, LocalAI) — they all speak the same
-protocol, so local and cloud inference are interchangeable here.
-
-At DEBUG level every call is logged with sizes, duration and (when the
-provider reports it) token usage — set PDFTRANSL_LOG_LEVEL=DEBUG to
-watch the pipeline work in real time.
+OpenAI, OpenRouter, DeepSeek и локальные серверы (Ollama, vLLM,
+LM Studio, llama.cpp) говорят на одном протоколе — локальный и
+облачный инференс взаимозаменяемы. Ретраи с бэкоффом, уважение
+Retry-After, подробная DEBUG-телеметрия каждого вызова.
 """
 
 from __future__ import annotations

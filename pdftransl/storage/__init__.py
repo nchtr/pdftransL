@@ -1,4 +1,5 @@
-"""Persistence for jobs and pipeline artifacts."""
+"""Хранилище задач (SQLite) для CLI/сервиса.
+"""
 
 from pdftransl.storage.repository import JobRepository
 

@@ -1,10 +1,11 @@
-"""Placeholder masking for non-translatable fragments.
+"""Маскировка непереводимых фрагментов плейсхолдерами.
 
-Scientific Markdown contains LaTeX formulas, code, image links,
-citations and URLs that must survive translation byte-for-byte.
-Before a segment is sent to the LLM every such fragment is replaced
-by an opaque placeholder token (``⟦PH42⟧``); after translation the
-placeholders are substituted back and their integrity is verified.
+Научный Markdown полон LaTeX-формул, кода, ссылок на картинки,
+цитирований и URL — всё это должно пережить перевод байт-в-байт.
+Перед отправкой сегмента в LLM каждый такой фрагмент заменяется на
+непрозрачный токен (``⟦PH42⟧``); после перевода токены подставляются
+обратно, а их целостность проверяется (потерянный токен = потерянная
+формула — это жёсткая ошибка, запускающая цикл исправлений).
 """
 
 from __future__ import annotations
@@ -15,7 +16,8 @@ from dataclasses import dataclass, field
 PLACEHOLDER_FMT = "⟦PH{}⟧"
 PLACEHOLDER_RE = re.compile(r"⟦PH(\d+)⟧")
 
-# Order matters: larger constructs must be masked before their parts.
+# Порядок важен: крупные конструкции маскируются раньше своих частей
+# (код-блок раньше инлайн-кода, $$...$$ раньше $...$ и т.д.).
 _MASK_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("code_fence", re.compile(r"```.*?```", re.DOTALL)),
     ("display_math", re.compile(r"\$\$.*?\$\$", re.DOTALL)),

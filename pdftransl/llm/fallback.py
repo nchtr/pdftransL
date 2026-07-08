@@ -1,9 +1,7 @@
-"""Multi-provider fallback chain.
+"""Цепочка провайдеров: упал основной — пробуем следующий.
 
-Wraps several clients; each request tries them in order and moves on
-when one raises LLMError (rate limit, outage, exhausted retries).
-Typical setup: local model first, cloud as a backstop — or the
-opposite for quality-first pipelines.
+Один RateLimiter/CooldownGate на всю цепочку, чтобы фолбэк не удваивал
+нагрузку на квоты.
 """
 
 from __future__ import annotations

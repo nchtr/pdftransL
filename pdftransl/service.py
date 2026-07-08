@@ -1,21 +1,15 @@
-"""Framework-agnostic service facade.
+"""Фасад движка без привязки к фреймворку.
 
-Designed for backend integration (Django, FastAPI, Flask, Celery):
+Для интеграции в любой бэкенд (Django, FastAPI, Celery):
 
     service = TranslationService(PipelineConfig.from_env())
+    job_id = service.submit("paper.pdf")   # из веб-запроса
+    service.process(job_id)               # из воркера
+    service.status(job_id)                # из поллинг-эндпоинта
 
-    # web request thread / view:
-    job_id = service.submit("paper.pdf")
+Обратная связь человека («обучение»):
 
-    # worker (Celery task, thread, management command):
-    service.process(job_id)
-
-    # polling endpoint:
-    service.status(job_id)   # {"status": "running", "stage": ..., ...}
-
-Human feedback ("learning"):
-
-    service.add_correction(source, corrected_translation)
+    service.add_correction(source, corrected)
     service.add_glossary_term("attention head", "головка внимания")
 """
 

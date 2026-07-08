@@ -1,3 +1,6 @@
+// Карточка задачи: живой прогресс по SSE, степпер стадий, ETA,
+// пауза/продолжить, предупреждения из QA-отчёта (сканы, память, движки),
+// скачивание форматов, вычитка сегментов и пересборка файлов с правками.
 import { useCallback, useEffect, useState } from 'react'
 import { api } from '../api.js'
 import { formatEta } from '../format.js'

@@ -1,7 +1,6 @@
-"""marker backend. `pip install marker-pdf`.
+"""marker — быстрый парсер PDF с поддержкой LaTeX-формул.
 
-Fast scientific-PDF-to-markdown converter with LaTeX equation support;
-a solid alternative when MinerU is too heavy for the machine.
+Легче MinerU, качество формул ниже, скорость выше.
 """
 
 from __future__ import annotations

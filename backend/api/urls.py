@@ -1,3 +1,5 @@
+"""Роутинг приложения api — все эндпоинты описаны в views.py."""
+
 from django.urls import path
 
 from . import views

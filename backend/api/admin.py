@@ -1,3 +1,5 @@
+"""Регистрация моделей в Django-админке (просмотр задач/сегментов)."""
+
 from django.contrib import admin
 
 from .models import SegmentRecord, TranslationJob

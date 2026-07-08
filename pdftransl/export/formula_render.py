@@ -1,12 +1,7 @@
-"""Render LaTeX formulas to PNG images (for DOCX without pandoc).
+"""Рендер LaTeX -> PNG через matplotlib mathtext.
 
-python-docx cannot typeset LaTeX, so without pandoc formulas used to
-land in the document as raw ``$...$`` text — unreadable. When
-matplotlib is available we rasterize each formula with its mathtext
-engine and embed the image, so the DOCX shows an actual formula.
-mathtext covers a solid subset of math; anything it can't parse
-(e.g. ``\\begin{aligned}``) raises and the caller falls back to text.
-pandoc remains the path to native, editable Word equations.
+Для DOCX-фолбэка; понимает подмножество LaTeX — на неудачу отвечает
+None, вызывающий решает, что делать.
 """
 
 from __future__ import annotations

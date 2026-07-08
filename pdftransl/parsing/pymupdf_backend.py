@@ -1,9 +1,7 @@
-"""PyMuPDF fallback backend.
+"""PyMuPDF — мгновенный текстовый фолбэк.
 
-No ML models: plain text extraction + embedded image export. Formulas
-are NOT recognized as LaTeX — use MinerU for scientific articles.
-This backend exists so the pipeline still works offline / without
-MinerU (e.g. for text-only documents or CI).
+Без распознавания формул и сканов; для «текстовых» статей достаточно,
+для остального — последний рубеж, когда ничего лучше не установлено.
 """
 
 from __future__ import annotations

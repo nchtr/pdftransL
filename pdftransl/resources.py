@@ -1,20 +1,18 @@
-"""Resource monitoring: memory pressure, stalls and non-responses.
+"""Мониторинг ресурсов: память, зависания, неответы.
 
-Local pipelines run heavy things back to back — a parser model (MinerU,
-Nougat) and then a translation model loaded into Ollama. If they overlap
-in RAM the machine OOMs (MinerU + a fresh Ollama model load can eat tens
-of GB and crash). This module lets the pipeline:
+Локальный пайплайн гоняет тяжёлое подряд: парсер (MinerU) и следом
+модель перевода в Ollama. Если они пересекутся в RAM — машина уходит
+в OOM (реальный кейс: 36 ГБ и краш). Здесь:
 
-- read available memory cross-platform (psutil if present, else
-  /proc/meminfo on Linux or vm_stat on macOS);
-- wait for memory to free before a heavy stage (the OOM fix — don't load
-  the translation model while the parser still holds its memory);
-- watch long operations for stalls (a parser or LLM that stops
-  responding) via a lightweight watchdog thread.
+- memory_stats() — свободная память кроссплатформенно (psutil, а без
+  него /proc/meminfo на Linux или vm_stat на macOS);
+- wait_for_memory() — подождать, пока парсер отдаст память, прежде
+  чем грузить модель (то самое лекарство от OOM);
+- Watchdog — фоновый детект «ни один сегмент не завершился N секунд»
+  (зависший/неотвечающий LLM или парсер).
 
-Everything degrades gracefully: if memory can't be read, guards become
-no-ops and log once, so the pipeline never breaks because a metric is
-unavailable.
+Всё деградирует мягко: нет метрик — защита отключается с одним
+предупреждением, пайплайн не ломается.
 """
 
 from __future__ import annotations

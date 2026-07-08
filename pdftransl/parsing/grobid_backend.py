@@ -1,10 +1,7 @@
-"""GROBID backend — precise bibliography and structure extraction.
+"""GROBID через HTTP-сервер: точная структура и библиография.
 
-GROBID (https://github.com/kermitt2/grobid) is a service that turns a
-scholarly PDF into structured TEI-XML with excellent header, section
-and reference segmentation. It doesn't recognize formulas to LaTeX, so
-it's best for text-heavy papers or as a fallback. Point
-``GROBID_URL`` at a running server (default http://localhost:8070).
+Требует поднятого сервера (GROBID_URL); TEI-XML конвертируется в
+Markdown.
 """
 
 from __future__ import annotations

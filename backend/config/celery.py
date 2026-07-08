@@ -1,3 +1,5 @@
+"""Инициализация Celery-приложения (очередь задач в продакшене)."""
+
 import os
 import sys
 from pathlib import Path

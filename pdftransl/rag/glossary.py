@@ -1,8 +1,8 @@
-"""Terminology glossary: enforced term translations.
+"""Глоссарий терминов в SQLite.
 
-Terms found in a segment are injected into the prompt so the model
-uses domain-approved translations consistently. Populated manually,
-from CSV, or grown over time from reviewed documents.
+Принудительные переводы терминологии: ручные записи, CSV-импорт,
+авто-пополнение из коротких правок человека. match() находит термины,
+встречающиеся в конкретном сегменте.
 """
 
 from __future__ import annotations

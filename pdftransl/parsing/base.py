@@ -1,4 +1,10 @@
-"""Parser backend interface and backend selection."""
+"""Интерфейс парсер-бэкенда и их реестр.
+
+ParserBackend — контракт (available()/parse()); BACKENDS — реестр;
+get_backend() выбирает по конфигу (auto = лучший из установленных);
+fallback_backends() — цепочка запасных, чтобы падение одного бэкенда
+(таймаут MinerU на крупном файле) не валило задачу.
+"""
 
 from __future__ import annotations
 

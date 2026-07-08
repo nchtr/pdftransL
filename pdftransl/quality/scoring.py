@@ -1,11 +1,7 @@
-"""LLM-judge quality scoring (0-100) per segment.
+"""LLM-судья: оценка 0-100 каждому сегменту.
 
-A cheap numeric signal that goes beyond structural validators: the
-judge model rates adequacy and fluency of each translated segment.
-Scores below the threshold add a warning issue, which makes the
-segment eligible for the LLM review pass. Off by default — it costs
-one extra call per segment; enable it for high-stakes documents or
-sample it in production.
+Ниже порога — сегмент помечается и уходит на ревью; сводка оценок — в
+отчёт. Включается опцией quality_score.
 """
 
 from __future__ import annotations

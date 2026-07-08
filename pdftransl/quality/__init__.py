@@ -1,4 +1,5 @@
-"""Quality control: deterministic validators and LLM review pass."""
+"""Контроль качества: валидаторы, ревью, судья, бэк-перевод, LaTeX.
+"""
 
 from pdftransl.quality.validators import validate_segment, document_report
 from pdftransl.quality.reviewer import Reviewer

@@ -1,9 +1,8 @@
-"""Local MinerU CLI backend.
+"""MinerU как локальный CLI-подпроцесс.
 
-MinerU (https://github.com/opendatalab/MinerU) is the best open-source
-option for scientific PDFs: layout analysis, formula recognition to
-LaTeX, table extraction and figure export. Requires `pip install
-mineru[core]` (or legacy `magic-pdf`).
+Лучшее распознавание формул/таблиц; тяжёлый (torch + модели).
+Подпроцесс ограничен parser_timeout — зависший MinerU принудительно
+останавливается с внятной ошибкой, а не висит вечно.
 """
 
 from __future__ import annotations

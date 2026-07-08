@@ -1,7 +1,9 @@
-"""JSON API consumed by the React SPA and the Telegram bot.
+"""JSON API для React SPA и телеграм-бота.
 
-NOTE: endpoints are unauthenticated by design of this starter — add
-auth (session/token) before exposing publicly.
+Задачи (загрузка/список/статус/удаление), SSE-стримы (одна задача и
+весь список), пауза/резюме, сегменты и правки, пересборка форматов,
+скачивание, глоссарий, статистика TM, серверные настройки «на лету»,
+отдача собранного SPA.
 """
 
 from __future__ import annotations
@@ -9,10 +11,11 @@ from __future__ import annotations
 import json
 import logging
 import time
-from collections import defaultdict, deque
+import shutil
 from pathlib import Path
 
 from django.conf import settings
+from django.core.cache import cache
 from django.http import (
     FileResponse,
     Http404,
@@ -83,18 +86,19 @@ def _engine_config() -> PipelineConfig:
 
 # --- jobs -------------------------------------------------------------
 
-# per-IP upload timestamps for the throttle (in-memory: per process)
-_upload_log: dict[str, deque] = defaultdict(deque)
-
-
 def _upload_allowed(ip: str) -> bool:
-    now = time.time()
-    log = _upload_log[ip]
-    while log and now - log[0] > 3600:
-        log.popleft()
-    if len(log) >= settings.UPLOADS_PER_HOUR:
+    """ИСПРАВЛЕНИЕ: Использование кэша (Redis/Memcached) вместо локального словаря."""
+    cache_key = f"upload_ratelimit_{ip}"
+    count = cache.get(cache_key, 0)
+    
+    if count >= settings.UPLOADS_PER_HOUR:
         return False
-    log.append(now)
+        
+    if count == 0:
+        cache.set(cache_key, 1, timeout=3600)
+    else:
+        cache.incr(cache_key)
+        
     return True
 
 
@@ -156,7 +160,14 @@ def jobs(request):
         job.save(update_fields=["stage_plan"])
     except Exception:
         logger.warning("Could not precompute stage plan for job %s", job.pk, exc_info=True)
-    mode = dispatch_job(str(job.pk))
+    try:
+        mode = dispatch_job(str(job.pk))
+    except RuntimeError as exc:
+        # локальная очередь потоков переполнена — честный 429 вместо 500;
+        # созданную запись убираем, чтобы не копить вечные "queued"-строки,
+        # клиент просто повторит загрузку позже
+        job.delete()
+        return JsonResponse({"error": str(exc)}, status=429)
     return JsonResponse(
         {"job_id": str(job.pk), "status": job.status, "dispatch": mode}, status=202
     )
@@ -173,14 +184,13 @@ def job_detail(request, job_id):
     if job.status == TranslationJob.Status.RUNNING:
         return JsonResponse({"error": "job is running; wait for it to finish"},
                             status=409)
-    import shutil
 
     output_root = Path(settings.PDFTRANSL_OUTPUT_DIR).resolve()
     md = (job.outputs or {}).get("md")
     if md:
         out_dir = Path(md).resolve().parent
-        # never delete outside the configured output root
-        if out_dir.exists() and str(out_dir).startswith(str(output_root)):
+        # ИСПРАВЛЕНИЕ: Защита от Path Traversal, удаляем только вложенные папки, а не корень
+        if out_dir.exists() and out_dir.is_relative_to(output_root) and out_dir != output_root:
             shutil.rmtree(out_dir, ignore_errors=True)
     try:
         job.pdf.delete(save=False)
@@ -211,26 +221,39 @@ def job_resume(request, job_id):
             {"error": f"cannot resume a job in status '{job.status}'"}, status=409
         )
     services.prepare_resume(job)
-    mode = dispatch_job(str(job.pk))
+    try:
+        mode = dispatch_job(str(job.pk))
+    except RuntimeError as exc:
+        # очередь переполнена: возвращаем задачу в paused, чтобы кнопка
+        # «Продолжить» осталась доступной, и отвечаем 429
+        job.status = TranslationJob.Status.PAUSED
+        job.save(update_fields=["status", "updated_at"])
+        return JsonResponse({"error": str(exc)}, status=429)
     return JsonResponse({"status": job.status, "dispatch": mode})
 
 
+# СИНХРОННЫЕ SSE-стримы — сознательно. Async-вариант (генератор с
+# asyncio.sleep) под WSGI — а это и `runserver`, и типовой gunicorn —
+# зависает: адаптер async-итераторов Django не отдаёт фреймы клиенту
+# (проверено curl-ом на живом runserver: ни байта за 8 секунд).
+# Sync-генератор работает и под WSGI, и под ASGI; цена — поток на
+# открытое соединение, что для дев-режима и малых инсталляций нормально.
+# Для высоконагруженного ASGI-деплоя сюда просится отдельная async-ветка.
 @require_GET
 def job_events(request, job_id):
-    """Server-Sent Events stream of job progress.
+    """SSE-стрим прогресса одной задачи.
 
-    Emits a `data:` line whenever status/stage/progress/ETA changes and
-    closes on a terminal status. Frontends may use EventSource here
-    instead of polling; polling keeps working either way. ``eta_seconds``
-    is recomputed every tick, so while running this naturally emits about
-    once a second — a live countdown, not just a change notification.
+    Шлёт `data:`-кадр при каждом изменении статуса/стадии/прогресса/ETA
+    и закрывается на терминальном статусе. ETA пересчитывается каждый
+    тик, поэтому во время выполнения стрим естественно шлёт кадр раз в
+    секунду — живой обратный отсчёт.
     """
-    _job_or_404(job_id)  # 404 early, before we start streaming
+    _job_or_404(job_id)  # 404 сразу, до начала стрима
     terminal = {"completed", "partial", "failed", "paused"}
 
     def stream():
         last = None
-        for _ in range(1800):  # safety cap: ~30 min
+        for _ in range(1800):  # предохранитель: ~30 мин, EventSource переподключится
             try:
                 job = TranslationJob.objects.get(pk=job_id)
             except TranslationJob.DoesNotExist:
@@ -258,19 +281,15 @@ def job_events(request, job_id):
 
 @require_GET
 def jobs_events(request):
-    """Server-Sent Events stream of the whole job list.
+    """SSE-стрим всего списка задач — замена опроса по таймеру.
 
-    Pushes the list whenever any job's status/stage/progress changes, so
-    the web page's job list doesn't need to poll ``/api/jobs/`` on a
-    timer — one persistent connection instead of a request every few
-    seconds. Falls back the same way ``job_events`` does: the browser's
-    EventSource auto-reconnects if this closes (30-minute safety cap) or
-    errors out.
+    Кадр уходит при любом изменении какой-либо задачи; фронтенд держит
+    одно постоянное соединение вместо fetch каждые 2 секунды.
     """
 
     def stream():
         last = None
-        for _ in range(1800):  # safety cap: ~30 min; EventSource reconnects
+        for _ in range(1800):  # предохранитель: ~30 мин
             items = [j.as_list_dict() for j in TranslationJob.objects.all()[:100]]
             payload = json.dumps({"jobs": items})
             if payload != last:
@@ -305,15 +324,23 @@ def job_segments(request, job_id):
 @require_POST
 def segment_correct(request, job_id, order):
     job = _job_or_404(job_id)
+    # ИСПРАВЛЕНИЕ: Защита от ValueError, предотвращаем падение 500
+    try:
+        order_int = int(order)
+    except ValueError:
+        return JsonResponse({"error": "order must be an integer"}, status=400)
+        
     try:
         body = json.loads(request.body)
         corrected = body["corrected"]
     except (ValueError, KeyError):
         return JsonResponse({"error": "expected JSON {corrected}"}, status=400)
+        
     try:
-        segment = services.save_correction(job, int(order), corrected)
+        segment = services.save_correction(job, order_int, corrected)
     except SegmentRecord.DoesNotExist:
         raise Http404
+        
     return JsonResponse(segment.as_dict())
 
 
@@ -456,8 +483,16 @@ def server_settings(request):
             continue
         expected = _SETTING_TYPES[key]
         try:
+            # ИСПРАВЛЕНИЕ: Строгая валидация типов (особенно bool) вместо затирания ошибок
             if expected is bool:
-                value = value if isinstance(value, bool) else str(value).lower() in ("1", "true", "yes", "on")
+                if isinstance(value, bool):
+                    pass
+                elif str(value).lower() in ("1", "true", "yes", "on"):
+                    value = True
+                elif str(value).lower() in ("0", "false", "no", "off"):
+                    value = False
+                else:
+                    raise ValueError(f"must be a boolean, got {value}")
             elif expected is int:
                 value = int(value)
             elif expected is list:
@@ -466,8 +501,8 @@ def server_settings(request):
                 value = list(value)
             else:
                 value = str(value)
-        except (TypeError, ValueError):
-            errors[key] = f"expected {expected.__name__}"
+        except (TypeError, ValueError) as exc:
+            errors[key] = str(exc)
             continue
         data[key] = value
     if errors:

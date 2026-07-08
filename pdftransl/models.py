@@ -1,4 +1,10 @@
-"""Core data structures shared across the pipeline."""
+"""Общие структуры данных, используемые всем пайплайном.
+
+Block — типизированный блок Markdown; Segment — единица перевода
+(final_text() решает, что уйдёт в документ: перевод или откат на
+оригинал); QAIssue — проблема от валидатора/ревьюера; ParsedDocument,
+Asset — результат парсинга; JobResult — итог всей задачи.
+"""
 
 from __future__ import annotations
 

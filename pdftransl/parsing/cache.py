@@ -1,8 +1,7 @@
-"""Parse-result cache keyed by PDF content hash.
+"""Кэш результатов парсинга по SHA-256 содержимого PDF.
 
-MinerU parsing is GPU/API-expensive; re-uploading the same PDF should
-not pay that cost twice. The cache stores the produced markdown and
-assets under ``<output_root>/.parse_cache/<sha256>_<backend>/``.
+Повторная загрузка того же файла (или ретрай упавшей задачи) не
+парсится заново — на MinerU это экономит десятки минут.
 """
 
 from __future__ import annotations
