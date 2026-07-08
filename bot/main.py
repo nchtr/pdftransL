@@ -1,12 +1,11 @@
-"""Telegram bot (aiogram v3): PDF in — translated document out.
+"""Телеграм-бот (aiogram v3): PDF на входе — перевод на выходе.
 
-Send a PDF to the bot and it replies with the translation in the
-formats chosen via /settings, editing a status message with pipeline
-progress along the way. Talks to the pdftransl engine directly — the
-Django backend is not required for the bot to work; they share the
-same SQLite state (translation memory, glossary) when run together.
+Пришлите боту PDF — он ответит переводом в выбранных через /settings
+форматах, редактируя статус-сообщение по стадиям. Работает с движком
+напрямую через service.process (статусы задач видны и из CLI/веба);
+Django для бота не нужен, но SQLite-состояние (TM, глоссарий) общее.
 
-Run:  TELEGRAM_BOT_TOKEN=... python -m bot
+Запуск:  TELEGRAM_BOT_TOKEN=... python -m bot
 """
 
 from __future__ import annotations

@@ -1,10 +1,7 @@
-"""VLM processing of exported figures.
+"""Описание рисунков vision-моделью (опция describe_figures).
 
-For each exported image a vision model produces a target-language
-description (axes, trends, label transcription+translation). Results
-are stored in ``figures.json`` next to the output markdown and in
-``Asset.description`` — usable for accessibility alt-text, figure
-indexes, or RAG over figures.
+Каждая экспортированная картинка прогоняется через VLM; результат — в
+figures.json и в отчёт.
 """
 
 from __future__ import annotations

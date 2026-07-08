@@ -1,8 +1,7 @@
-"""Anthropic Messages API client (Claude models).
+"""Нативный клиент Anthropic Messages API.
 
-Accepts OpenAI-style messages and converts them: the system message
-becomes the top-level ``system`` field, image parts become Anthropic
-content blocks.
+Отличия от OpenAI-формата: system отдельным полем, свой формат
+картинок — конвертация происходит здесь.
 """
 
 from __future__ import annotations

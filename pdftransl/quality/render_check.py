@@ -1,10 +1,5 @@
-"""Render the exported HTML in headless Chromium and count KaTeX errors.
-
-The LaTeX syntax check is static; this one asks the actual renderer.
-KaTeX is configured with ``throwOnError: false``, so broken formulas
-become ``.katex-error`` elements — we open the page, let auto-render
-finish and count them. Needs playwright + a Chromium binary (see
-PDFTRANSL_CHROMIUM); silently skips when unavailable.
+"""Проверка рендера: открыть готовый HTML в headless Chromium и
+посчитать ошибки KaTeX. Включается опцией render_check.
 """
 
 from __future__ import annotations

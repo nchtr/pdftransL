@@ -1,17 +1,11 @@
-"""Per-document translation checkpoint for resumable jobs.
+"""Чекпойнт перевода документа — для возобновляемых задач.
 
-A large document that fails halfway (MinerU crash, provider outage,
-process kill) shouldn't have to re-translate everything on the next
-run. The pipeline writes each finished segment to a checkpoint file
-next to the output; a re-run loads it and skips segments already
-done — independent of the translation memory (which only keeps
-successful, ``learn``-enabled segments and is keyed globally).
-
-The file is an append-only JSONL log (one record per segment), so a
-crash mid-write loses at most the last line. It is keyed by the source
-text hash plus the language pair, so it is safe to reuse across runs of
-the same document and ignores stale entries from a different target
-language.
+Большой документ, упавший на середине (краш MinerU, отвал провайдера,
+kill процесса), не должен переводиться заново. Каждый готовый сегмент
+дописывается в JSONL рядом с результатом; перезапуск подхватывает
+готовое и продолжает. Ключ — хеш источника + языковая пара; обрыв на
+полуслове теряет максимум последнюю строку. Пауза задач использует
+этот же механизм.
 """
 
 from __future__ import annotations

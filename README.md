@@ -297,6 +297,7 @@ grounding-промпт вместо тяжёлого системного — т
 ## Документация
 
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — как устроен пайплайн и где расширять
+- [docs/FILES.md](docs/FILES.md) — карта файлов: что за что отвечает
 - [docs/OLLAMA.md](docs/OLLAMA.md) — локальные модели: установка, выбор, грабли
 - [docs/FINETUNING.md](docs/FINETUNING.md) — LoRA на вашей памяти переводов
 - [docs/IMPROVEMENTS.md](docs/IMPROVEMENTS.md) — что уже сделано и что в планах

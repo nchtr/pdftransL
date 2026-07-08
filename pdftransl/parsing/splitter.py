@@ -1,9 +1,10 @@
-"""Split Markdown into typed structural blocks.
+"""Разбор Markdown на типизированные структурные блоки.
 
-The splitter is intentionally conservative: anything it cannot
-classify stays a paragraph (translatable) and formula protection is
-handled later by the masking layer, so misclassification never
-corrupts math.
+Сплиттер намеренно консервативен: всё, что он не смог классифицировать,
+остаётся абзацем (переводимым), а защиту формул берёт на себя слой
+маскировки — поэтому ошибка классификации никогда не портит математику.
+Здесь же: `mark_references` (библиография не переводится) и `assemble`
+(сборка блоков обратно в документ).
 """
 
 from __future__ import annotations

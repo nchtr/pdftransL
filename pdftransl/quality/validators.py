@@ -1,8 +1,9 @@
-"""Deterministic (non-LLM) validators — the first line of self-control.
+"""Детерминированные (без LLM) проверки перевода — первая линия
+самоконтроля.
 
-Cheap, fast checks that catch the most common LLM translation failures:
-lost formulas, broken tables, untranslated chunks, runaway generations.
-Errors trigger the repair loop; warnings are recorded in the QA report.
+Дёшево и быстро ловим типичные провалы LLM: потерянные формулы,
+сломанные таблицы, непереведённые куски, пустой ответ, разгон длины.
+Ошибки запускают цикл исправлений; предупреждения идут в QA-отчёт.
 """
 
 from __future__ import annotations

@@ -1,4 +1,8 @@
-"""Deterministic fake client for tests and dry runs."""
+"""Детерминированный фейк-клиент для тестов и dry-run.
+
+Отдаёт канированные ответы или применяет transform к последнему
+user-сообщению.
+"""
 
 from __future__ import annotations
 

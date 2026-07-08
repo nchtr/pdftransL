@@ -1,15 +1,8 @@
-"""Locate and inline a vendored KaTeX distribution.
+"""Вшивание KaTeX в HTML офлайн.
 
-The HTML export renders formulas with KaTeX. Loading it from a CDN
-breaks the two things users care about most: offline viewing and the
-Chromium PDF path (which runs from a ``file://`` URL with no network).
-When a KaTeX build is available locally we inline its CSS, fonts
-(as data URIs) and JS, producing a fully self-contained page. If it
-is not vendored we fall back to the CDN ``<link>``/``<script>`` tags.
-
-Where we look, in order:
-1. ``PDFTRANSL_KATEX_DIR`` (a KaTeX ``dist`` directory)
-2. ``frontend/node_modules/katex/dist`` next to the repo
+CSS+JS инлайном, шрифты — data-URI (из frontend/node_modules или
+PDFTRANSL_KATEX_DIR): формулы рендерятся без сети, в том числе при
+печати в PDF. Нет вендоренного KaTeX — честный фолбэк на CDN.
 """
 
 from __future__ import annotations

@@ -1,4 +1,5 @@
-"""PDF parsing backends and Markdown structural splitting."""
+"""Парсинг PDF: бэкенды, кэш, детекторы сканов и кракозябр.
+"""
 
 from pdftransl.parsing.base import ParserBackend, get_backend, parse_pdf
 from pdftransl.parsing.splitter import split_markdown

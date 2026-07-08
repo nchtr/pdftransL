@@ -1,10 +1,8 @@
-"""Markdown -> standalone HTML with KaTeX-rendered formulas.
+"""Markdown -> автономный HTML с KaTeX-формулами.
 
-Self-contained converter built on the pipeline's own block splitter,
-so it understands exactly the markdown the pipeline produces
-(headings, paragraphs, tables, code, display math, images, HTML).
-Images are inlined as data URIs, making the file fully portable —
-this HTML is also the input for browser-based PDF rendering.
+Собственный конвертер поверх нашего же сплиттера — понимает ровно тот
+markdown, который производит пайплайн. Картинки инлайнятся data-URI:
+файл полностью переносим и служит входом для Chromium-PDF.
 """
 
 from __future__ import annotations

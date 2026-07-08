@@ -1,3 +1,5 @@
+// Тонкий клиент REST API: fetch + разбор ошибок ({error} из JSON).
+// Все пути бэкенда собраны здесь, компоненты работают только через api.*
 const BASE = ''
 
 async function json(url, options) {

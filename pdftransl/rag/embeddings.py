@@ -1,11 +1,9 @@
-"""Pluggable embedders for the translation memory.
+"""Подключаемые эмбеддеры для памяти переводов.
 
-Three tiers so RAG always works:
-- ``HashingEmbedder`` — zero-dependency character-n-gram hashing;
-  crude but deterministic and offline.
-- ``SentenceTransformerEmbedder`` — local neural embeddings
-  (``pip install sentence-transformers``).
-- ``ApiEmbedder`` — any OpenAI-compatible ``/embeddings`` endpoint.
+Три уровня, чтобы RAG работал всегда: HashingEmbedder (без
+зависимостей, офлайн), SentenceTransformerEmbedder (локальные
+нейро-эмбеддинги), ApiEmbedder (любой OpenAI-совместимый
+/embeddings).
 """
 
 from __future__ import annotations

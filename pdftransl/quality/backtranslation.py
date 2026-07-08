@@ -1,9 +1,8 @@
-"""Back-translation semantic check (optional, off by default).
+"""Проверка обратным переводом.
 
-Translate the result back to the source language with the same client
-and compare embeddings of the original vs the back-translation. Low
-similarity flags meaning loss that structural validators cannot see.
-Costs one extra LLM call per checked segment — enable selectively.
+Сегмент переводится назад на язык оригинала, косинус эмбеддингов
+оригинала и бэк-перевода ниже порога — предупреждение о возможной
+потере смысла. Дорого (второй LLM-проход), поэтому опция.
 """
 
 from __future__ import annotations

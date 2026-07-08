@@ -1,17 +1,15 @@
-"""Format export orchestration with graceful engine fallback.
+"""Оркестрация экспорта с мягким фолбэком движков.
 
-Engines per format, tried in order of output fidelity:
+Движки на формат, по убыванию качества:
+- docx: pandoc (нативные формулы Word/OMML) -> python-docx (формулы
+  картинками);
+- pdf: pandoc+xelatex (настоящая типографика) -> печать нашего
+  KaTeX-HTML в headless Chromium -> xelatex по нашему .tex ->
+  weasyprint;
+- html/latex: собственные конвертеры (всегда доступны).
 
-- docx: pandoc (native Word equations via OMML) -> python-docx
-  (structure + images, formulas as LaTeX text)
-- pdf:  pandoc+xelatex (true typography) -> headless Chromium print
-  of our KaTeX HTML (rendered formulas, needs playwright) ->
-  weasyprint (text formulas)
-- html: built-in KaTeX exporter (always available)
-
-The result dict maps format -> output path (or None with a reason in
-the 'engines' entry), so callers and the QA report can tell the user
-exactly what was produced and how.
+Результат честен: files[fmt] -> путь или None, engines[fmt] -> какой
+движок сработал или почему формат недоступен.
 """
 
 from __future__ import annotations

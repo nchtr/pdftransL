@@ -1,9 +1,8 @@
-"""SQLite job repository.
+"""SQLite-репозиторий задач.
 
-Tracks translation jobs (status, stage, progress, result paths,
-QA report). Framework-agnostic: a Django view, a Celery worker and
-the CLI all read/write the same rows, which is what makes the
-submit/status/result API possible without a message broker.
+Статус/стадия/прогресс/результаты каждой задачи. Без привязки к
+фреймворку: Django-вьюха, Celery-воркер и CLI читают одни строки —
+поэтому submit/status/result работает без брокера.
 """
 
 from __future__ import annotations

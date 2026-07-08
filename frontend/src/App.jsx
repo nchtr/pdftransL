@@ -1,3 +1,7 @@
+// Каркас приложения: вкладки Перевод/Настройки/Глоссарий.
+// Список задач обновляется живым SSE-стримом (/api/jobs/events/) —
+// одно постоянное соединение вместо опроса сервера по таймеру;
+// при ошибке стрима — фолбэк на поллинг.
 import { useCallback, useEffect, useState } from 'react'
 import { api } from './api.js'
 import UploadForm from './components/UploadForm.jsx'

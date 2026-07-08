@@ -1,9 +1,9 @@
-"""Provider-agnostic chat client interface.
+"""Интерфейс чат-клиента, не зависящий от провайдера.
 
-Messages use the OpenAI chat format: ``{"role": ..., "content": ...}``
-where content is a string or, for vision models, a list of parts
-(``text_content`` / ``image_content`` helpers). Individual clients
-convert this to their native wire format.
+Сообщения — в формате OpenAI: {"role": ..., "content": ...}, где
+content — строка или (для vision) список частей; хелперы
+text_content/image_content/vision_message собирают мультимодальные
+сообщения. Конкретные клиенты переводят это в свой wire-формат.
 """
 
 from __future__ import annotations

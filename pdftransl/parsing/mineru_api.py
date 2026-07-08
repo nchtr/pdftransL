@@ -1,9 +1,7 @@
-"""MinerU cloud API backend (mineru.net, API v4 batch flow).
+"""Облачный API MinerU (mineru.net).
 
-Flow: request an upload URL -> PUT the PDF -> poll extraction results
--> download the result zip (markdown + images) and unpack it.
-Endpoints are configurable via ``PipelineConfig.mineru_api_base`` in
-case the service changes or a self-hosted deployment is used.
+Загрузка PDF -> опрос статуса задачи -> скачивание ZIP с Markdown.
+Нужен MINERU_API_KEY; удобно, когда локальный MinerU не потянуть.
 """
 
 from __future__ import annotations

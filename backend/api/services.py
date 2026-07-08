@@ -1,4 +1,9 @@
-"""Bridge between Django models and the pdftransl engine."""
+"""Мост между Django и движком pdftransl.
+
+Сборка PipelineConfig из серверных настроек + опций задачи, запуск
+run_job (с колбэками прогресса и паузы), план стадий при создании,
+pause/resume, правки человека -> TM, пересборка файлов с правками.
+"""
 
 from __future__ import annotations
 

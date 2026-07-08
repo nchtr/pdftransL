@@ -1,3 +1,4 @@
+// Глоссарий: просмотр, добавление и удаление терминов (/api/glossary/).
 import { useCallback, useEffect, useState } from 'react'
 import { api } from '../api.js'
 

@@ -1,8 +1,8 @@
-"""pdftransl — scientific PDF translation engine.
+"""Публичный API пакета pdftransl.
 
-Parse PDF (layout, LaTeX formulas, tables, figures) -> Markdown,
-translate with local or cloud LLM/VLM providers, verify quality,
-learn via translation memory / RAG, integrate into Python backends.
+Реэкспортирует всё, что нужно для интеграции: TranslationPipeline
+(движок), TranslationService (фасад submit/process/status),
+PipelineConfig (настройки) и модели данных.
 """
 
 from pdftransl.config import PipelineConfig, ProviderConfig, get_provider_config

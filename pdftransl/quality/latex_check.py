@@ -1,10 +1,8 @@
-"""Lightweight LaTeX sanity check for extracted/translated formulas.
+"""Лёгкая синтаксическая проверка LaTeX-формул (без TeX).
 
-Pure-python syntax validation (no TeX engine): balanced braces,
-matched \\begin/\\end environments, no truncated commands. Catches the
-typical OCR/parsing artifacts of formula recognition so broken
-formulas are surfaced in the QA report instead of failing silently
-at render time.
+Баланс скобок, парность ``\\begin``/``\\end``, чётность ``$$`` —
+типичные артефакты OCR/перевода всплывают в отчёте, а не молча ломают
+рендер.
 """
 
 from __future__ import annotations

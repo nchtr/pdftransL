@@ -1,9 +1,7 @@
-"""Nougat backend (Meta). `pip install nougat-ocr`.
+"""Nougat (Meta) — сквозной OCR научных статей в Markdown.
 
-Nougat is an end-to-end visual transformer that OCRs scientific PDFs
-straight to Markdown+LaTeX — strong on dense mathematics. It's heavy
-(downloads a model, wants a GPU) and, like MinerU, handles image/scan
-pages itself. API varies across releases, so everything is defensive.
+Распознаёт формулы прямо в LaTeX. Практически требует GPU; на CPU —
+только терпеливым.
 """
 
 from __future__ import annotations

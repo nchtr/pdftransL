@@ -1,4 +1,6 @@
-"""Builds per-segment RAG context: TM examples + glossary hits."""
+"""Сборка RAG-контекста для сегмента: точное совпадение из TM ->
+похожие примеры -> термины глоссария, найденные в тексте.
+"""
 
 from __future__ import annotations
 

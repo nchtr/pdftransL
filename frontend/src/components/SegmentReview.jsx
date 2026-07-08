@@ -1,3 +1,5 @@
+// Вычитка по сегментам: оригинал и перевод рядом, клик — правка,
+// сохранение уходит в память переводов (/segments/<n>/correct/).
 import { useCallback, useEffect, useState } from 'react'
 import { api } from '../api.js'
 

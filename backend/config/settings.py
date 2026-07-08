@@ -1,8 +1,8 @@
-"""Django settings for the pdftransl backend.
+"""Настройки Django-бэкенда pdftransl.
 
-Everything deployment-specific comes from environment variables so the
-same code runs in dev (sqlite, thread workers) and prod (postgres,
-celery + redis) without edits.
+Всё деплой-специфичное берётся из переменных окружения, поэтому один и
+тот же код работает в dev (sqlite, фоновые потоки) и в проде (postgres,
+celery + redis) без правок.
 """
 
 import os

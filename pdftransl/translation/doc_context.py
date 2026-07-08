@@ -1,11 +1,9 @@
-"""Document-level context: rolling summary and auto-extracted glossary.
+"""Документный контекст: саммари и авто-глоссарий одним проходом.
 
-Both run once per document before segment translation:
-- the summary tells the model what the paper is about, improving
-  disambiguation of terms in every segment;
-- extracted term pairs act as a per-document glossary, keeping
-  terminology consistent across independently translated segments.
-Failures are non-fatal — the pipeline degrades to plain translation.
+Оба вычисляются до перевода сегментов: саммари попадает в системный
+промпт каждого сегмента (снимает неоднозначность терминов), пары
+терминов работают как per-document глоссарий. Сбой любого шага не
+фатален — пайплайн просто продолжает без него.
 """
 
 from __future__ import annotations

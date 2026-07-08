@@ -1,8 +1,8 @@
-"""Job dispatch: Celery when configured, background threads otherwise.
+"""Диспатч задач: Celery при USE_CELERY=1, иначе фоновый поток.
 
-Thread mode keeps the dev setup broker-free (`python manage.py
-runserver` is enough); production should set USE_CELERY=1 and run a
-worker for durability and horizontal scaling.
+Поток держит дев-запуск без брокера (runserver достаточно); продакшен
+— celery worker + очередь PDFTRANSL_JOB_QUEUE (тяжёлый GPU-воркер
+можно отделить).
 """
 
 from __future__ import annotations

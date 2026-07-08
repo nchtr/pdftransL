@@ -1,4 +1,5 @@
-"""RAG layer: translation memory, glossary, embeddings, retrieval."""
+"""Память переводов, глоссарий, эмбеддинги, сборка RAG-контекста.
+"""
 
 from pdftransl.rag.embeddings import get_embedder
 from pdftransl.rag.glossary import Glossary

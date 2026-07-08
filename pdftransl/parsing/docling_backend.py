@@ -1,9 +1,4 @@
-"""Docling backend (IBM). `pip install docling`.
-
-Strong on layout and tables; formula enrichment is available via
-docling's own options. Good middle ground between PyMuPDF (no ML)
-and MinerU (heaviest, best formulas). API surface differs between
-docling versions, so everything is defensive.
+"""Docling (IBM) — парсер с сильными таблицами.
 """
 
 from __future__ import annotations

@@ -1,4 +1,5 @@
-"""Entry point for ``python -m pdftransl`` — delegates to the CLI."""
+"""Точка входа ``python -m pdftransl`` — делегирует в CLI.
+"""
 
 from pdftransl.cli import main
 

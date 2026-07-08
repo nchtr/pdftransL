@@ -1,8 +1,11 @@
-"""Configuration: pipeline options and LLM provider presets.
+"""Вся конфигурация в одном месте.
 
-Everything is overridable via environment variables (PDFTRANSL_* /
-provider key vars) or programmatically, so the same code runs in a CLI,
-a Django view, or a Celery worker without changes.
+PipelineConfig — dataclass со всеми настройками пайплайна (парсер,
+провайдеры, качество, экспорт, ресурсы); читается из переменных
+окружения PDFTRANSL_* через from_env(), любые поля перекрываются
+kwargs. ProviderConfig + PROVIDER_PRESETS — пресеты LLM-провайдеров
+(ollama, openrouter, ..., deepseek_ocr). model_supports_vision() —
+эвристика мультимодальности по имени модели.
 """
 
 from __future__ import annotations

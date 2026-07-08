@@ -1,4 +1,4 @@
-"""Command-line interface.
+"""Интерфейс командной строки.
 
     pdftransl translate data/input/article.pdf --provider ollama
     pdftransl translate-md article.md -o article.ru.md

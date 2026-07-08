@@ -1,10 +1,9 @@
-"""Markdown -> LaTeX project export.
+"""Markdown -> компилируемый LaTeX-проект.
 
-Produces a compilable ``.tex`` file: headings become sections, math
-passes through untouched, tables become ``tabular``, images become
-``figure`` environments pointing at the exported assets. Useful as a
-starting point for journal-style typesetting — and it compiles with
-``xelatex`` out of the box (fonts permitting).
+Заголовки -> секции, математика проходит без изменений, таблицы ->
+tabular, картинки -> figure. Компилируется xelatex-ом из коробки
+(шрифты позволяют). Спецсимволы текста экранируются одним
+regex-проходом.
 """
 
 from __future__ import annotations

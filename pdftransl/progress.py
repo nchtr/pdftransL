@@ -1,20 +1,12 @@
-"""Precise, per-config pipeline progress.
+"""Точный прогресс пайплайна.
 
-The old progress bar hard-coded a fixed fraction for each stage
-(``translate`` always "worth" 50% of the bar, ``export`` always 6%...)
-regardless of which stages a given job actually runs. A job with review
-and back-translation both disabled would sit at 60% the instant
-translation finished and then crawl through export/learn for the
-remaining 40% of the bar — inaccurate and confusing.
-
-Instead, :func:`build_stage_plan` looks at the *actual* config for this
-job (which stages are enabled) and gives each enabled stage a share of
-the bar proportional to how long it typically takes, renormalized to
-sum to 1.0 — disabled stages contribute nothing, so the bar reflects
-this job's real shape. :class:`StageTracker` turns
-``(stage_name, fraction_done_within_that_stage)`` into one overall
-0..1 number, and also exposes the plan itself so a UI can render a
-per-stage breakdown instead of one flat bar.
+Раньше у каждой стадии была зашитая доля прогресс-бара независимо от
+того, какие стадии реально включены — задача без ревью «замирала» на
+60%. build_stage_plan(config) собирает план только из реально
+включённых стадий с долями пропорционально их типичной длительности;
+StageTracker переводит «доля внутри стадии» в общий 0..1;
+estimate_eta_seconds — линейная оценка оставшегося времени (как у
+pip/tqdm), самокорректируется по ходу.
 """
 
 from __future__ import annotations

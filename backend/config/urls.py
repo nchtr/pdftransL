@@ -1,3 +1,5 @@
+"""Корневой роутинг: /api/, админка и catch-all на React SPA."""
+
 from django.conf import settings
 from django.conf.urls.static import static
 from django.contrib import admin

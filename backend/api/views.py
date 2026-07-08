@@ -1,7 +1,9 @@
-"""JSON API consumed by the React SPA and the Telegram bot.
+"""JSON API для React SPA и телеграм-бота.
 
-NOTE: endpoints are unauthenticated by design of this starter — add
-auth (session/token) before exposing publicly.
+Задачи (загрузка/список/статус/удаление), SSE-стримы (одна задача и
+весь список), пауза/резюме, сегменты и правки, пересборка форматов,
+скачивание, глоссарий, статистика TM, серверные настройки «на лету»,
+отдача собранного SPA.
 """
 
 from __future__ import annotations

@@ -1,10 +1,7 @@
-"""LLM repair of syntactically broken LaTeX formulas.
+"""LLM-починка синтаксически битых формул.
 
-Formula recognition (OCR) sometimes produces almost-right LaTeX: a
-lost closing brace, a truncated ``\\end{...}``. Instead of just
-flagging these, we ask the LLM to repair the syntax — and accept the
-fix only if it actually passes the same deterministic check. The
-original formula stays in place when the model can't fix it.
+Каждая проблемная формула отправляется модели; правка принимается
+только если проходит ту же самую проверку — хуже не сделаем.
 """
 
 from __future__ import annotations

@@ -1,4 +1,5 @@
-"""Export of translated markdown to HTML / DOCX / PDF."""
+"""Экспорт результата: HTML/KaTeX, DOCX, PDF, LaTeX.
+"""
 
 from pdftransl.export.exporter import available_engines, export_document
 

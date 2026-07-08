@@ -1,4 +1,7 @@
-"""Per-chat bot settings with JSON-file persistence."""
+"""Per-chat настройки бота в JSON-файле.
+
+Язык, форматы, провайдер, флаги — переживают перезапуск бота.
+"""
 
 from __future__ import annotations
 

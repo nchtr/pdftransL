@@ -1,10 +1,11 @@
-"""Thread-safe request throttling: a fixed rpm budget and an adaptive
-cooldown gate.
+"""Потокобезопасный троттлинг: фиксированный rpm-бюджет и адаптивный
+кулдаун.
 
-Free tiers of cloud providers (and small local servers) choke when a
-parallel pipeline fires 8 requests at once. One limiter/gate instance
-is shared by all clients in a fallback chain, so the whole pipeline
-respects a single budget.
+Бесплатные тарифы захлёбываются, когда параллельный пайплайн бьёт
+восемью запросами сразу. RateLimiter делит бюджет запросов/минуту на
+все потоки; CooldownGate по одному HTTP 429 ставит на паузу всех
+(уважая Retry-After, с экспоненциальным штрафом и спадом после
+успеха).
 """
 
 from __future__ import annotations

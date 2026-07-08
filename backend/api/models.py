@@ -1,3 +1,11 @@
+"""Django-модели: задачи перевода, сегменты вычитки, настройки.
+
+TranslationJob — файл, параметры, статус (в т.ч. paused), план стадий,
+started_at и ETA; SegmentRecord — пары оригинал/перевод/правка для
+вычитки (final_text с теми же откатами, что в движке); ServerConfig —
+серверные настройки «на лету» одним JSON-блобом.
+"""
+
 import uuid
 
 from django.db import models

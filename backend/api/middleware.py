@@ -1,7 +1,7 @@
-"""Small dependency-free middlewares: CORS and optional token auth.
+"""Мини-middleware без зависимостей: CORS и опциональный Bearer-токен.
 
-Swap for django-cors-headers / DRF auth when the project grows —
-these cover the starter use-cases without extra packages.
+Токен (PDFTRANSL_API_TOKEN) закрывает весь /api/; принимается и
+?token= — EventSource не умеет ставить заголовки.
 """
 
 from django.conf import settings

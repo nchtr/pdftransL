@@ -1,11 +1,16 @@
-"""End-to-end pipeline orchestration.
+"""Оркестрация полного цикла перевода.
 
-    PDF -> parse (cached; MinerU/PyMuPDF) -> split into blocks
-        -> mark References section -> document summary + auto-glossary
-        -> mask formulas -> RAG context -> parallel LLM translation
-        -> validate -> repair loop -> LLM review -> back-translation
-        -> LaTeX syntax check -> assemble markdown (optionally bilingual)
-        -> export HTML/DOCX/PDF -> assets & report -> learn (TM)
+    PDF -> парсинг (кэш; MinerU/OCR/PyMuPDF) -> блоки
+        -> пометка References -> саммари + авто-глоссарий
+        -> маскировка формул -> RAG-контекст -> параллельный перевод
+        -> валидаторы -> цикл исправлений -> LLM-ревью -> бэк-перевод
+        -> проверка LaTeX -> сборка markdown (опц. двуязычная)
+        -> экспорт HTML/DOCX/PDF -> ассеты и отчёт -> обучение TM
+
+Плюс: memory guard между парсером и моделью (анти-OOM), дискретная
+запись результата после каждой партии, кооперативная пауза,
+деградация необязательных стадий по одной (сбой ревью не стирает
+готовый перевод).
 """
 
 from __future__ import annotations

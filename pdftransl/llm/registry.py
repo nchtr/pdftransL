@@ -1,4 +1,5 @@
-"""Provider config -> client instance."""
+"""Фабрика LLM-клиента по имени провайдера.
+"""
 
 from __future__ import annotations
 

@@ -1,13 +1,10 @@
-"""Central logging configuration, driven by environment variables.
+"""Центральная настройка логов из переменных окружения.
 
-Set ``PDFTRANSL_LOG_LEVEL=DEBUG`` to see everything the pipeline does —
-every LLM call with sizes and timing, per-segment translation progress,
-parser/export engine decisions — in the CLI, the bot and the Django
-server alike. ``PDFTRANSL_LOG_FILE`` additionally mirrors logs into a
-rotating file, which is handy when the server console scrolls away.
-
-The level can also be changed at runtime (the web UI settings panel
-does this through ``set_level``), no restart required.
+PDFTRANSL_LOG_LEVEL=DEBUG — видно всё: каждый LLM-вызов с размерами и
+временем, ход сегментов, решения парсера/экспорта — в CLI, боте и
+Django одинаково. PDFTRANSL_LOG_FILE дублирует в файл с ротацией.
+set_level() меняет уровень на лету (это использует веб-панель
+настроек).
 """
 
 from __future__ import annotations
