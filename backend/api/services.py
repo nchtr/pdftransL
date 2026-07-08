@@ -6,6 +6,7 @@ import logging
 from pathlib import Path
 
 from django.conf import settings
+from django.utils import timezone
 
 from pdftransl.config import PipelineConfig
 from pdftransl.export.exporter import export_document
@@ -135,7 +136,10 @@ def run_job(job_id: str) -> str:
     """Execute the pipeline for a job; called from Celery or a thread."""
     job = TranslationJob.objects.get(pk=job_id)
     job.status = TranslationJob.Status.RUNNING
-    job.save(update_fields=["status", "updated_at"])
+    # Reset on every (re-)dispatch, including resume — the ETA estimate is
+    # based on this run's pace, not inflated by time spent queued/paused.
+    job.started_at = timezone.now()
+    job.save(update_fields=["status", "started_at", "updated_at"])
 
     def on_stage(stage: str, progress: float) -> None:
         TranslationJob.objects.filter(pk=job_id).update(

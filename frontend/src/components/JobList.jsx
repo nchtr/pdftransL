@@ -1,3 +1,5 @@
+import { formatEta } from '../format.js'
+
 const STATUS_LABELS = {
   queued: 'в очереди',
   running: 'выполняется',
@@ -43,6 +45,7 @@ export default function JobList({ jobs, selectedId, onSelect, onDelete }) {
               <>
                 {' · '}
                 {job.stage} {Math.round(job.progress * 100)}%
+                {formatEta(job.eta_seconds) && <> · осталось {formatEta(job.eta_seconds)}</>}
               </>
             )}
           </div>

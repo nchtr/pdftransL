@@ -219,9 +219,11 @@ def job_resume(request, job_id):
 def job_events(request, job_id):
     """Server-Sent Events stream of job progress.
 
-    Emits a `data:` line whenever status/stage/progress changes and
+    Emits a `data:` line whenever status/stage/progress/ETA changes and
     closes on a terminal status. Frontends may use EventSource here
-    instead of polling; polling keeps working either way.
+    instead of polling; polling keeps working either way. ``eta_seconds``
+    is recomputed every tick, so while running this naturally emits about
+    once a second — a live countdown, not just a change notification.
     """
     _job_or_404(job_id)  # 404 early, before we start streaming
     terminal = {"completed", "partial", "failed", "paused"}
@@ -233,11 +235,13 @@ def job_events(request, job_id):
                 job = TranslationJob.objects.get(pk=job_id)
             except TranslationJob.DoesNotExist:
                 break
+            eta = job.eta_seconds()
             payload = json.dumps({
                 "status": job.status,
                 "stage": job.stage,
                 "progress": job.progress,
                 "pause_requested": job.pause_requested,
+                "eta_seconds": round(eta) if eta is not None else None,
             })
             if payload != last:
                 last = payload

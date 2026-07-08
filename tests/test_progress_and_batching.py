@@ -9,10 +9,34 @@ import pytest
 from pdftransl.config import PipelineConfig
 from pdftransl.llm.fake import FakeLLMClient
 from pdftransl.pipeline import TranslationPipeline
-from pdftransl.progress import StageTracker, build_stage_plan
+from pdftransl.progress import StageTracker, build_stage_plan, estimate_eta_seconds
 from pdftransl.translation.translator import Translator, build_segments
 from pdftransl.parsing.splitter import split_markdown
 from pdftransl.masking import Masker
+
+
+# ---- estimate_eta_seconds --------------------------------------------------
+
+def test_eta_none_below_min_progress():
+    assert estimate_eta_seconds(10.0, 0.01) is None
+
+
+def test_eta_none_when_done():
+    assert estimate_eta_seconds(100.0, 1.0) is None
+    assert estimate_eta_seconds(100.0, 1.2) is None
+
+
+def test_eta_linear_extrapolation():
+    # 10s elapsed at 25% done -> 30s remaining (40s total run)
+    eta = estimate_eta_seconds(10.0, 0.25)
+    assert eta == pytest.approx(30.0)
+
+
+def test_eta_self_corrects_as_progress_grows():
+    # same elapsed, more progress -> smaller remaining estimate
+    slow = estimate_eta_seconds(20.0, 0.1)
+    fast = estimate_eta_seconds(20.0, 0.5)
+    assert fast < slow
 
 
 # ---- build_stage_plan / StageTracker --------------------------------------

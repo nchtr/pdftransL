@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { api } from '../api.js'
+import { formatEta } from '../format.js'
 import SegmentReview from './SegmentReview.jsx'
 import StageStepper from './StageStepper.jsx'
 
@@ -106,6 +107,9 @@ export default function JobDetail({ jobId, onClose, onError }) {
         Статус: <b>{job.status}</b>
         {job.status === 'running' && (
           <> · {Math.round(job.progress * 100)}% общий прогресс</>
+        )}
+        {job.status === 'running' && formatEta(job.eta_seconds) && (
+          <> · осталось {formatEta(job.eta_seconds)}</>
         )}
         {job.pause_requested && job.status === 'running' && (
           <> · ставим на паузу…</>

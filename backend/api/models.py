@@ -1,6 +1,9 @@
 import uuid
 
 from django.db import models
+from django.utils import timezone
+
+from pdftransl.progress import estimate_eta_seconds
 
 
 class ServerConfig(models.Model):
@@ -59,6 +62,11 @@ class TranslationJob(models.Model):
     # computed once at creation time from this job's actual config — lets the UI
     # render a per-stage breakdown instead of one flat percentage.
     stage_plan = models.JSONField(default=list, blank=True)
+    # Set when the worker actually starts running (not at creation/queue
+    # time) and reset on every re-dispatch (incl. resume) — the reference
+    # point for the ETA estimate, so time spent paused/queued isn't
+    # mistaken for slow progress.
+    started_at = models.DateTimeField(null=True, blank=True)
 
     # format -> absolute path: md / html / docx / pdf / bilingual / report
     outputs = models.JSONField(default=dict, blank=True)
@@ -75,6 +83,16 @@ class TranslationJob(models.Model):
     def __str__(self) -> str:
         return f"{self.original_name or self.id} [{self.status}]"
 
+    def eta_seconds(self) -> "float | None":
+        """Approximate seconds remaining, extrapolated from how long this
+        run has taken to reach its current progress. Only meaningful
+        while actually running (queued/paused/finished jobs have no
+        "remaining" to speak of)."""
+        if self.status != self.Status.RUNNING or not self.started_at:
+            return None
+        elapsed = (timezone.now() - self.started_at).total_seconds()
+        return estimate_eta_seconds(elapsed, self.progress)
+
     def as_dict(self) -> dict:
         return {
             "id": str(self.id),
@@ -89,6 +107,7 @@ class TranslationJob(models.Model):
             "stage": self.stage,
             "progress": self.progress,
             "stage_plan": self.stage_plan,
+            "eta_seconds": self.eta_seconds(),
             "formats": [f for f, p in (self.outputs or {}).items() if p],
             "report": self.report,
             "error": self.error or None,

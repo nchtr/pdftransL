@@ -130,3 +130,23 @@ class StageTracker:
         self.current = 1.0
         if self._on_stage:
             self._on_stage("done", 1.0)
+
+
+def estimate_eta_seconds(
+    elapsed_seconds: float,
+    progress: float,
+    min_progress: float = 0.03,
+) -> Optional[float]:
+    """Classic linear ETA: assume the remaining work takes as long per
+    unit of progress as the work done so far did (``elapsed / progress
+    * (1 - progress)``). It's an approximation, not a promise — parsing
+    and translation rarely progress at a constant rate — but it's the
+    same estimator every progress bar (pip, tqdm...) uses, and it
+    self-corrects every tick as more real data comes in.
+
+    Returns ``None`` while progress is too small for the ratio to mean
+    anything (right after a job starts) or once it's already done.
+    """
+    if progress is None or progress < min_progress or progress >= 1.0:
+        return None
+    return elapsed_seconds * (1.0 - progress) / progress
