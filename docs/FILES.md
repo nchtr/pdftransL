@@ -145,6 +145,7 @@
 | Файл | За что отвечает |
 |---|---|
 | `quickstart.sh` | Установка одной командой: venv (Python 3.12/3.13), зависимости, MinerU по флагу, pandoc/Chromium по желанию, сборка фронтенда, опрос Ollama и выбор модели, автонастройка .env (включая анти-OOM под размер модели), миграции. |
+| `quickstart.ps1` | То же самое для Windows (PowerShell 5.1+): py-лаунчер, winget-подсказки для pandoc/Node/Ollama, RAM через CIM, опрос Ollama по HTTP API, анти-OOM в .env. |
 | `docker-compose.yml` | Контейнеры: web + celery-воркер + redis. |
 | `.env.example` | Аннотированный список всех переменных окружения. |
 | `pyproject.toml` | Пакет, зависимости, extras (pymupdf/export/backend/bot/dev), версия. |

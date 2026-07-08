@@ -1,17 +1,16 @@
-"""VLM OCR backend for scanned / image-only PDFs.
+"""OCR-бэкенд на vision-модели — для сканов и битых PDF.
 
-Renders every page to an image and asks a vision model to transcribe
-it to Markdown with LaTeX math. This is the one parsing path that
-handles scans *and* recognizes their formulas, and it runs anywhere a
-vision model is reachable — a cloud API (gpt-4o, Claude), a general
-local VLM (qwen2.5-vl via Ollama), or a *specialized* document-OCR
-model (DeepSeek-OCR, GOT-OCR served via vLLM). The OCR model is chosen
-independently of the translation model via ``vision_model`` /
-``vision_provider``, so you can pair a strong OCR model for parsing
-with a lighter LLM for translation.
+Рендерит каждую страницу в картинку и просит vision-модель
+транскрибировать её в Markdown с LaTeX-формулами. Единственный путь
+парсинга, который справляется со сканами *и* распознаёт их формулы;
+работает везде, где доступна vision-модель: облако (gpt-4o, Claude),
+локальный VLM (qwen2.5-vl в Ollama) или специализированная OCR-модель
+(DeepSeek-OCR, GOT-OCR через vLLM — им даётся короткий
+grounding-промпт вместо тяжёлого системного). OCR-модель выбирается
+независимо от модели перевода (vision_model / vision_provider).
 
-Selected explicitly (``--backend vlm_ocr``) or automatically when the
-pipeline detects a scan and ``ocr_on_scan`` is enabled.
+Включается явно (--backend vlm_ocr) или автоматически, когда детектор
+нашёл скан/кракозябры и ocr_on_scan включён.
 """
 
 from __future__ import annotations

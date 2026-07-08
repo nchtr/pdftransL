@@ -1,18 +1,15 @@
-"""Detect PDFs a text extractor can't handle: scans and garbled fonts.
+"""Детектор PDF, с которыми не справится извлечение текста.
 
-Two failure modes need OCR instead of text extraction:
+Два режима отказа, требующих OCR вместо экстракции:
+- **скан** (страницы-картинки) — текстового слоя нет вовсе;
+- **битый текстовый слой** — страница выглядит нормально, но у
+  встроенных шрифтов нет ToUnicode-карты, и извлекаются «кракозябры»
+  (частый случай у кириллических научных PDF — Cyberleninka и т.п.).
+  Формально текст «есть», поэтому одна проверка на скан его пропустит.
 
-- **Scanned / image-only** pages carry no text layer at all — a text
-  extractor yields an empty document.
-- **Garbled text layer** — the page renders fine but the embedded
-  fonts have no ToUnicode map, so extraction returns "кракозябры"
-  (Private Use Area glyphs, replacement chars, mojibake). Common in
-  Cyrillic scientific PDFs (Cyberleninka & co.). Formally there *is*
-  text, so scan detection alone misses it.
-
-Both are surfaced here so the pipeline can route to OCR. Detection
-uses PyMuPDF; without it we conservatively report "fine" so nothing
-breaks.
+Оба случая всплывают здесь, чтобы пайплайн увёл документ в OCR.
+Детекция через PyMuPDF; без него консервативно отвечаем «всё в
+порядке», чтобы ничего не сломать.
 """
 
 from __future__ import annotations
