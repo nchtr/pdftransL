@@ -202,6 +202,20 @@ else
 fi
 say "Локальная модель: $OLLAMA_MODEL (у машины ~${TOTAL_GB} ГБ RAM)"
 
+# оценка веса модели в RAM (МБ) по имени — для memory guard: пайплайн
+# дождётся, пока тяжёлый парсер (MinerU) отдаст память, прежде чем Ollama
+# начнёт грузить модель — это лечит OOM «парсер почти закончил и всё упало»
+MODEL_MB=6000
+case "$OLLAMA_MODEL" in
+  *72b*|*70b*) MODEL_MB=45000 ;;
+  *32b*)       MODEL_MB=22000 ;;
+  *27b*)       MODEL_MB=18000 ;;
+  *14b*|*12b*) MODEL_MB=11000 ;;
+  *7b*|*8b*)   MODEL_MB=6000 ;;
+  *3b*|*4b*)   MODEL_MB=3500 ;;
+  *1b*|*2b*)   MODEL_MB=2000 ;;
+esac
+
 if ! grep -q '^PDFTRANSL_PROVIDER=' .env 2>/dev/null; then
   say "Настраиваю .env на локальную Ollama"
   {
@@ -210,16 +224,34 @@ if ! grep -q '^PDFTRANSL_PROVIDER=' .env 2>/dev/null; then
     echo "PDFTRANSL_PROVIDER=ollama"
     echo "PDFTRANSL_MODEL=$OLLAMA_MODEL"
     echo "PDFTRANSL_BASE_URL=http://localhost:11434/v1"
+    echo ""
+    echo "# Защита от OOM: перед загрузкой модели после тяжёлого парсера"
+    echo "# ждём, пока освободится ~размер модели (оценка под $OLLAMA_MODEL)."
+    echo "PDFTRANSL_MEMORY_GUARD=true"
+    echo "PDFTRANSL_MIN_FREE_MEMORY_MB=$MODEL_MB"
+    echo ""
+    echo "# Перевод партиями: меньше пиковая нагрузка на память/потоки,"
+    echo "# частичный результат пишется на диск после каждой партии."
+    echo "PDFTRANSL_TRANSLATE_BATCH_SIZE=40"
   } >> .env
+  note "memory guard: жду ${MODEL_MB} МБ свободной RAM перед загрузкой модели"
 else
   note "PDFTRANSL_PROVIDER уже настроен в .env — не переопределяю"
   note "(чтобы сменить модель, поправьте PDFTRANSL_MODEL в .env)"
+  if ! grep -q '^PDFTRANSL_MIN_FREE_MEMORY_MB=' .env 2>/dev/null; then
+    note "Совет: добавьте в .env защиту от OOM —"
+    note "  PDFTRANSL_MEMORY_GUARD=true"
+    note "  PDFTRANSL_MIN_FREE_MEMORY_MB=$MODEL_MB   # ~размер вашей модели"
+  fi
 fi
 
 if [ "$OLLAMA_RUNNING" = "1" ]; then
   say "Сервер Ollama работает"
   model_present=0
-  for m in "${INSTALLED_MODELS[@]}"; do
+  # ${arr[@]+...} — на пустом массиве bash 3.2 (штатный на macOS) c set -u
+  # падает с "unbound variable"; такое бывает, когда Ollama запущена, но
+  # моделей ещё нет
+  for m in ${INSTALLED_MODELS[@]+"${INSTALLED_MODELS[@]}"}; do
     [ "$m" = "$OLLAMA_MODEL" ] && model_present=1 && break
   done
   if [ "$model_present" = "1" ]; then
@@ -258,12 +290,19 @@ cat <<EOF
     ${BOLD}Запустить веб-интерфейс${RESET}:
         cd backend && python manage.py runserver
         → http://localhost:8000
+        ${DIM}выбор парсера и OCR-модели прямо в форме; прогресс по стадиям,${RESET}
+        ${DIM}оценка времени, пауза/продолжение задач${RESET}
 
     ${BOLD}Запустить телеграм-бота${RESET} (нужен TELEGRAM_BOT_TOKEN в .env):
         python -m bot
 
     ${BOLD}Проверить, что всё живо${RESET}:
-        python -m pytest tests/ -q
+        python -m pytest tests/ -q      # офлайн, без ключей
+        pdftransl engines               # какие экспорт-движки доступны
+
+    ${BOLD}Если PDF — скан или «кракозябры»${RESET}: поставьте мультимодальную
+    модель (ollama pull qwen2.5-vl) — OCR включится сам; спец-OCR
+    (DeepSeek-OCR через vLLM) — см. .env.example, блок «Спец-OCR модель».
 
     Гайд по Ollama и выбору модели: ${BOLD}docs/OLLAMA.md${RESET}
     Ключи облачных провайдеров (по желанию): отредактируйте ${BOLD}.env${RESET}

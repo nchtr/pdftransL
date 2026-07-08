@@ -75,10 +75,18 @@ class Checkpoint:
             if key in self._done:
                 return
             self._done[key] = translation
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            with open(self.path, "a", encoding="utf-8") as fh:
-                fh.write(json.dumps({"k": key, "t": translation},
-                                    ensure_ascii=False) + "\n")
+            try:
+                self.path.parent.mkdir(parents=True, exist_ok=True)
+                with open(self.path, "a", encoding="utf-8") as fh:
+                    fh.write(json.dumps({"k": key, "t": translation},
+                                        ensure_ascii=False) + "\n")
+            except OSError as exc:
+                # Bookkeeping must never fail the translation it records:
+                # a full disk here would otherwise mark a successfully
+                # translated segment as failed. The in-memory copy still
+                # serves this run; only resumability of THIS segment is lost.
+                logger.warning("checkpoint write failed (%s); segment kept "
+                               "in memory only", exc)
 
     @property
     def count(self) -> int:

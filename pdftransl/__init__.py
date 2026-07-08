@@ -18,7 +18,7 @@ from pdftransl.models import (
 from pdftransl.pipeline import TranslationPipeline
 from pdftransl.service import TranslationService
 
-__version__ = "0.15.1"
+__version__ = "0.16.0"
 
 __all__ = [
     "Asset",

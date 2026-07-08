@@ -8,13 +8,14 @@ translated in parallel with a thread pool when ``max_workers > 1``.
 from __future__ import annotations
 
 import logging
+import re
 from concurrent.futures import CancelledError, ThreadPoolExecutor, as_completed
 from typing import Callable, Optional
 
 from pdftransl.config import PipelineConfig
 from pdftransl.llm.base import BaseLLMClient
 from pdftransl.masking import Masker, unmask
-from pdftransl.models import Block, QAIssue, Segment, new_id
+from pdftransl.models import Block, BlockType, QAIssue, Segment, new_id
 from pdftransl.quality.validators import validate_segment
 from pdftransl.translation.prompts import (
     REPAIR_USER,
@@ -27,6 +28,39 @@ logger = logging.getLogger(__name__)
 ProgressCb = Callable[[int, int, str], None]
 
 
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?…])\s+")
+
+
+def _split_oversized(text: str, char_budget: int) -> list[str]:
+    """Split a paragraph that alone exceeds the segment budget.
+
+    A single monster block (typical source: a garbled PDF whose whole
+    page extracts as one paragraph with no blank lines) used to go to
+    the LLM as one request — blowing the context window or max_tokens
+    and coming back truncated. Split at sentence boundaries, packing
+    sentences up to the budget; a single sentence longer than the
+    budget stays whole (mid-sentence cuts hurt translation more than a
+    long request), unless it is 4x over — then fall back to line
+    boundaries. Never cuts mid-word.
+    """
+    if len(text) <= char_budget:
+        return [text]
+    pieces = _SENTENCE_SPLIT_RE.split(text)
+    if len(pieces) == 1 and len(text) > 4 * char_budget:
+        pieces = [ln for ln in text.splitlines() if ln.strip()] or [text]
+    chunks: list[str] = []
+    current = ""
+    for piece in pieces:
+        if current and len(current) + len(piece) + 1 > char_budget:
+            chunks.append(current)
+            current = piece
+        else:
+            current = f"{current} {piece}".strip() if current else piece
+    if current:
+        chunks.append(current)
+    return chunks or [text]
+
+
 def build_segments(
     blocks: list[Block],
     masker: Masker,
@@ -35,38 +69,57 @@ def build_segments(
     """Group blocks into segments.
 
     Consecutive translatable blocks are merged until ``char_budget`` is
-    reached (a block is never split); non-translatable blocks become
-    pass-through segments preserving document order.
+    reached; non-translatable blocks become pass-through segments
+    preserving document order. A single *paragraph* block bigger than
+    the budget is split at sentence boundaries (see
+    :func:`_split_oversized`) so one giant block can't overload the
+    LLM; tables and headings are never split — a partial table breaks
+    both markdown structure and the row-count validator.
     """
     segments: list[Segment] = []
     buf: list[Block] = []
+    buf_texts: list[str] = []
     buf_len = 0
 
     def flush_translate() -> None:
-        nonlocal buf, buf_len
+        nonlocal buf, buf_texts, buf_len
         if not buf:
             return
-        source = "\n\n".join(b.text for b in buf)
+        source = "\n\n".join(buf_texts)
         masked = masker.mask(source)
         segments.append(
             Segment(
                 id=new_id("seg_"),
                 kind="translate",
                 source_text=source,
-                block_indices=[b.index for b in buf],
+                block_indices=sorted({b.index for b in buf}),
                 masked_text=masked.text,
                 placeholders=masked.mapping,
             )
         )
         buf = []
+        buf_texts = []
         buf_len = 0
+
+    def add_translatable(block: Block, text: str) -> None:
+        nonlocal buf_len
+        if buf and buf_len + len(text) > char_budget:
+            flush_translate()
+        buf.append(block)
+        buf_texts.append(text)
+        buf_len += len(text) + 2
 
     for block in blocks:
         if block.translatable and block.text.strip():
-            if buf and buf_len + len(block.text) > char_budget:
-                flush_translate()
-            buf.append(block)
-            buf_len += len(block.text) + 2
+            if (
+                block.type == BlockType.PARAGRAPH
+                and len(block.text) > char_budget
+            ):
+                for chunk in _split_oversized(block.text, char_budget):
+                    add_translatable(block, chunk)
+                    flush_translate()  # keep each oversized chunk standalone
+            else:
+                add_translatable(block, block.text)
         else:
             flush_translate()
             segments.append(
@@ -265,7 +318,10 @@ class Translator:
         to_translate = [s for s in segments if s.kind == "translate"]
         total = len(to_translate)
         done = 0
-        batch_size = self.config.translate_batch_size or total or 1
+        # 0/negative means "one batch, the whole document"
+        batch_size = self.config.translate_batch_size
+        if batch_size is None or batch_size <= 0:
+            batch_size = total or 1
 
         workers = max(1, self.config.max_workers)
         if workers == 1 or total <= 1:
@@ -313,8 +369,11 @@ class Translator:
                     try:
                         future.result()
                     except CancelledError:
-                        # paused before this one started; leave it for resume
+                        # paused before this one started; leave it for resume —
+                        # and don't count it as progress, or the frozen bar
+                        # would claim work that never happened
                         segment.issues.append(_paused_issue())
+                        continue
                     except Exception as exc:
                         logger.error("Segment %s failed: %s", segment.id, exc)
                         segment.issues.append(
