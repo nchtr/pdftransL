@@ -101,9 +101,14 @@ class Segment:
         """Text that goes into the assembled output document."""
         if self.kind == "pass":
             return self.source_text
-        if self.translation is not None:
+        if self.translation:
             return self.translation
-        return self.source_text  # graceful degradation: keep source
+        # Graceful degradation: keep source. Deliberately falsy-checked, not
+        # `is not None` — a stalled/overloaded LLM can "answer" with an empty
+        # string (cut off mid-stream, or a hung provider returning nothing)
+        # without raising, and that used to slip through as an empty segment,
+        # producing a document that looked entirely blank.
+        return self.source_text
 
     def to_dict(self) -> dict[str, Any]:
         """Serializable view for backends storing segments (review UI)."""
@@ -124,7 +129,7 @@ class JobResult:
     """Outcome of a full pipeline run."""
 
     job_id: str
-    status: str                     # "completed" | "failed" | "partial"
+    status: str                     # "completed" | "failed" | "partial" | "paused"
     output_markdown_path: Optional[str] = None
     source_markdown_path: Optional[str] = None
     assets_dir: Optional[str] = None

@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from 'react'
 import { api } from '../api.js'
+import { formatEta } from '../format.js'
 import SegmentReview from './SegmentReview.jsx'
+import StageStepper from './StageStepper.jsx'
 
 const FORMAT_TITLES = {
   md: 'Markdown',
@@ -16,6 +18,8 @@ export default function JobDetail({ jobId, onClose, onError }) {
   const [job, setJob] = useState(null)
   const [showReview, setShowReview] = useState(false)
   const [rebuilding, setRebuilding] = useState(false)
+  const [pausing, setPausing] = useState(false)
+  const [resuming, setResuming] = useState(false)
 
   const refresh = useCallback(() => {
     api.job(jobId).then(setJob).catch((e) => onError(e.message))
@@ -35,7 +39,7 @@ export default function JobDetail({ jobId, onClose, onError }) {
       source.onmessage = (event) => {
         const data = JSON.parse(event.data)
         setJob((prev) => (prev ? { ...prev, ...data } : prev))
-        if (['completed', 'partial', 'failed'].includes(data.status)) {
+        if (['completed', 'partial', 'failed', 'paused'].includes(data.status)) {
           source.close()
           refresh() // pull the full record with report and formats
         }
@@ -65,6 +69,30 @@ export default function JobDetail({ jobId, onClose, onError }) {
     }
   }
 
+  const pause = async () => {
+    setPausing(true)
+    try {
+      await api.pauseJob(jobId)
+      refresh()
+    } catch (e) {
+      onError(e.message)
+    } finally {
+      setPausing(false)
+    }
+  }
+
+  const resume = async () => {
+    setResuming(true)
+    try {
+      await api.resumeJob(jobId)
+      refresh()
+    } catch (e) {
+      onError(e.message)
+    } finally {
+      setResuming(false)
+    }
+  }
+
   if (!job) return <p className="muted">Загрузка…</p>
 
   const report = job.report || {}
@@ -77,11 +105,49 @@ export default function JobDetail({ jobId, onClose, onError }) {
 
       <p>
         Статус: <b>{job.status}</b>
-        {job.stage && job.status === 'running' && (
-          <> · {job.stage} {Math.round(job.progress * 100)}%</>
+        {job.status === 'running' && (
+          <> · {Math.round(job.progress * 100)}% общий прогресс</>
+        )}
+        {job.status === 'running' && formatEta(job.eta_seconds) && (
+          <> · осталось {formatEta(job.eta_seconds)}</>
+        )}
+        {job.pause_requested && job.status === 'running' && (
+          <> · ставим на паузу…</>
         )}
       </p>
       {job.error && <p className="error-text">{job.error}</p>}
+
+      {['queued', 'running', 'paused', 'failed'].includes(job.status) && (
+        <StageStepper
+          plan={job.stage_plan}
+          stage={job.stage}
+          progress={job.progress}
+          status={job.status}
+        />
+      )}
+
+      {(job.status === 'running' || job.status === 'queued') && (
+        <div className="actions">
+          <button onClick={pause} disabled={pausing || job.pause_requested}>
+            {job.pause_requested ? 'Пауза после текущего сегмента…' : pausing ? 'Ставим на паузу…' : 'Пауза'}
+          </button>
+        </div>
+      )}
+
+      {job.status === 'paused' && (
+        <>
+          <p className="warn-text">
+            ⏸ Задача на паузе{report.segments_done != null && (
+              <> — переведено {report.segments_done} из {report.segments_translated} сегментов</>
+            )}. Уже переведённая часть доступна для скачивания ниже.
+          </p>
+          <div className="actions">
+            <button onClick={resume} disabled={resuming}>
+              {resuming ? 'Возобновляем…' : 'Продолжить перевод'}
+            </button>
+          </div>
+        </>
+      )}
 
       {report.scan_warning && (
         <p className="warn-text">⚠ {report.scan_warning}</p>

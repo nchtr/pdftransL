@@ -6,11 +6,13 @@ import logging
 from pathlib import Path
 
 from django.conf import settings
+from django.utils import timezone
 
 from pdftransl.config import PipelineConfig
 from pdftransl.export.exporter import export_document
 from pdftransl.parsing.splitter import assemble
 from pdftransl.pipeline import TranslationPipeline
+from pdftransl.progress import build_stage_plan
 from pdftransl.rag.embeddings import get_embedder
 from pdftransl.rag.glossary import Glossary
 from pdftransl.rag.store import TranslationMemory
@@ -37,7 +39,7 @@ _STR_KEYS = (
 _INT_KEYS = (
     "max_workers", "rpm_limit", "parser_timeout", "ocr_dpi",
     "tm_autoexport_every", "min_free_memory_mb", "memory_wait_timeout",
-    "stall_warning_seconds", "max_ocr_pages",
+    "stall_warning_seconds", "max_ocr_pages", "translate_batch_size",
 )
 
 
@@ -122,21 +124,42 @@ def build_config(job: TranslationJob) -> PipelineConfig:
     return PipelineConfig.from_env(**overrides)
 
 
+def compute_stage_plan(job: TranslationJob) -> list[dict]:
+    """Stage breakdown for this job's actual config — computed once at
+    creation time so the UI can render a per-stage progress view even
+    before the job starts running."""
+    config = build_config(job)
+    return [s.to_dict() for s in build_stage_plan(config)]
+
+
 def run_job(job_id: str) -> str:
     """Execute the pipeline for a job; called from Celery or a thread."""
     job = TranslationJob.objects.get(pk=job_id)
     job.status = TranslationJob.Status.RUNNING
-    job.save(update_fields=["status", "updated_at"])
+    # Reset on every (re-)dispatch, including resume — the ETA estimate is
+    # based on this run's pace, not inflated by time spent queued/paused.
+    job.started_at = timezone.now()
+    job.save(update_fields=["status", "started_at", "updated_at"])
 
     def on_stage(stage: str, progress: float) -> None:
         TranslationJob.objects.filter(pk=job_id).update(
             stage=stage, progress=round(progress, 3)
         )
 
+    def should_pause() -> bool:
+        # Cheap poll (once per finished segment) of the flag the /pause/
+        # endpoint sets; translation stops cooperatively once it sees True.
+        return TranslationJob.objects.filter(
+            pk=job_id, pause_requested=True
+        ).exists()
+
     try:
         config = build_config(job)
         pipeline = TranslationPipeline(config)
-        result = pipeline.run(job.pdf.path, on_stage=on_stage, job_id=str(job.pk))
+        result = pipeline.run(
+            job.pdf.path, on_stage=on_stage, job_id=str(job.pk),
+            should_pause=should_pause,
+        )
     except Exception as exc:  # noqa: BLE001 - job must record any failure
         logger.exception("Job %s crashed", job_id)
         job.status = TranslationJob.Status.FAILED
@@ -156,11 +179,13 @@ def run_job(job_id: str) -> str:
         outputs["report"] = result.report_path
 
     job.status = result.status
+    job.pause_requested = False  # request fulfilled (or moot for any other outcome)
     job.outputs = outputs
     job.assets_dir = result.assets_dir or ""
     job.report = result.report
     job.error = result.error or ""
-    job.progress = 1.0 if result.status != "failed" else job.progress
+    if result.status in ("completed", "partial"):
+        job.progress = 1.0
     job.save()
 
     SegmentRecord.objects.filter(job=job).delete()
@@ -177,6 +202,30 @@ def run_job(job_id: str) -> str:
         for i, seg in enumerate(result.segments)
     ])
     return job.status
+
+
+def pause_job(job: TranslationJob) -> None:
+    """Ask a queued/running job to stop after its current segment(s).
+
+    The worker (``run_job``, via the pipeline's ``should_pause`` poll)
+    checks this between segments and flips the job to PAUSED once it has
+    actually stopped — this just raises the flag.
+    """
+    job.pause_requested = True
+    job.save(update_fields=["pause_requested", "updated_at"])
+
+
+def prepare_resume(job: TranslationJob) -> None:
+    """Reset a PAUSED job so it can be re-dispatched.
+
+    Nothing is re-translated from scratch: the per-document checkpoint
+    written during the paused run already holds every finished segment,
+    and the pipeline's ``resume`` option (on by default) reuses it.
+    """
+    job.status = TranslationJob.Status.QUEUED
+    job.pause_requested = False
+    job.error = ""
+    job.save(update_fields=["status", "pause_requested", "error", "updated_at"])
 
 
 def save_correction(job: TranslationJob, order: int, corrected: str) -> SegmentRecord:
