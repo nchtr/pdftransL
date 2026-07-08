@@ -1,9 +1,10 @@
-"""LLM review pass — second line of self-control.
+"""LLM-ревью — вторая линия самоконтроля.
 
-After deterministic validators, segments (all or only flagged ones)
-can be re-checked by an LLM acting as a reviewer. The reviewer either
-approves the translation or returns a revised version, which is then
-re-validated with the same deterministic checks.
+Ревьюер перепроверяет проблемные сегменты: JSON-вердикт
+{ok: true} либо {ok: false, revised: ...}. Ревизия принимается
+только если не теряет содержимое плейсхолдеров (формулы/ссылки),
+иначе остаётся исходный перевод с пометкой. Сбой ревью не фатален —
+пайплайн продолжает без него.
 """
 
 from __future__ import annotations

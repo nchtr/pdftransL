@@ -23,7 +23,15 @@ git clone <репозиторий> && cd pdftransL
 
 Скрипт (писался под macOS, работает и на Linux) сам создаст окружение,
 поставит зависимости, соберёт веб-интерфейс, настроит `.env` под
-локальную Ollama и подскажет, какую модель скачать под вашу память.
+локальную Ollama (включая защиту от OOM под размер модели) и подскажет,
+какую модель скачать под вашу память. На Windows — то же самое одной
+командой в PowerShell:
+
+```powershell
+.\quickstart.ps1        # если политика запрещает:
+powershell -ExecutionPolicy Bypass -File .\quickstart.ps1
+```
+
 Дальше:
 
 ```bash
@@ -43,7 +51,7 @@ pdftransl translate статья.pdf --formats html,docx,pdf
 | `backend/` | Django: API, очередь задач, вычитка, админка |
 | `frontend/` | React-интерфейс: загрузка, опции, прогресс, вычитка |
 | `bot/` | телеграм-бот — кинул PDF, получил перевод файлами |
-| `quickstart.sh` | всё вышеперечисленное одной командой |
+| `quickstart.sh` / `quickstart.ps1` | всё вышеперечисленное одной командой (macOS/Linux и Windows) |
 | `docker-compose.yml` | то же самое, но в контейнерах |
 
 ## Как это работает

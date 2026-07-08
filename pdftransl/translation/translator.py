@@ -1,8 +1,15 @@
-"""Segment building and LLM translation with self-repair loop.
+"""Сегментация и LLM-перевод с циклом самопроверки.
 
-Segments are independent by construction (placeholder ids are
-document-unique, context comes from the *source* side), so they are
-translated in parallel with a thread pool when ``max_workers > 1``.
+Ядро перевода: блоки группируются в сегменты (гигантские абзацы режутся
+по предложениям, чтобы не перегружать модель), сегменты переводятся
+параллельно партиями, каждый ответ проходит валидаторы, а проблемы
+скармливаются модели обратно в ограниченном цикле исправлений.
+
+Сегменты независимы по построению (плейсхолдеры уникальны на весь
+документ, контекст берётся с *исходной* стороны), поэтому при
+``max_workers > 1`` их можно переводить параллельно пулом потоков.
+Пауза кооперативна: ``should_pause`` опрашивается между сегментами,
+недоделанное подхватит чекпойнт при возобновлении.
 """
 
 from __future__ import annotations
@@ -33,16 +40,16 @@ _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?…])\s+")
 
 
 def _split_oversized(text: str, char_budget: int) -> list[str]:
-    """Split a paragraph that alone exceeds the segment budget.
+    """Разрезать абзац, который ОДИН больше бюджета сегмента.
 
-    A single monster block (typical source: a garbled PDF whose whole
-    page extracts as one paragraph with no blank lines) used to go to
-    the LLM as one request — blowing the context window or max_tokens
-    and coming back truncated. Split at sentence boundaries, packing
-    sentences up to the budget; a single sentence longer than the
-    budget stays whole (mid-sentence cuts hurt translation more than a
-    long request), unless it is 4x over — then fall back to line
-    boundaries. Never cuts mid-word.
+    Одиночный блок-монстр (типичный источник — битый PDF, чья страница
+    извлеклась одним абзацем без пустых строк) раньше уходил в LLM
+    одним запросом: переполнял контекст/max_tokens и возвращался
+    обрезанным. Режем по границам предложений, упаковывая их до
+    бюджета; предложение длиннее бюджета остаётся целым (разрез посреди
+    предложения вредит переводу сильнее длинного запроса), если только
+    оно не в 4 раза больше — тогда фолбэк на границы строк. Посреди
+    слова не режем никогда.
     """
     if len(text) <= char_budget:
         return [text]
@@ -67,15 +74,15 @@ def build_segments(
     masker: Masker,
     char_budget: int = 4000,
 ) -> list[Segment]:
-    """Group blocks into segments.
+    """Сгруппировать блоки в сегменты перевода.
 
-    Consecutive translatable blocks are merged until ``char_budget`` is
-    reached; non-translatable blocks become pass-through segments
-    preserving document order. A single *paragraph* block bigger than
-    the budget is split at sentence boundaries (see
-    :func:`_split_oversized`) so one giant block can't overload the
-    LLM; tables and headings are never split — a partial table breaks
-    both markdown structure and the row-count validator.
+    Последовательные переводимые блоки сливаются, пока не набран
+    ``char_budget``; непереводимые становятся pass-through-сегментами с
+    сохранением порядка документа. Одиночный *абзац* крупнее бюджета
+    режется по предложениям (см. :func:`_split_oversized`), чтобы один
+    гигантский блок не перегрузил LLM; таблицы и заголовки не режутся
+    никогда — частичная таблица ломает и markdown-структуру, и
+    валидатор количества строк.
     """
     segments: list[Segment] = []
     buf: list[Block] = []
@@ -136,8 +143,8 @@ def build_segments(
 
 
 class Translator:
-    """Translates segments with placeholder protection, validation and
-    a bounded repair loop (self-control)."""
+    """Переводит сегменты: защита плейсхолдерами, валидация и
+    ограниченный цикл исправлений (самоконтроль)."""
 
     def __init__(
         self,
@@ -150,7 +157,7 @@ class Translator:
         self.config = config
         self.retriever = retriever
         self.checkpoint = checkpoint
-        # Document-level context, set once per document by the pipeline.
+        # Документный контекст — пайплайн задаёт его один раз на документ.
         self.doc_summary: str = ""
         self.doc_terms: list[dict[str, str]] = []
 
@@ -164,8 +171,8 @@ class Translator:
         started = _time.monotonic()
         cfg = self.config
 
-        # Resume: a previous run of this document already finished this
-        # segment — reuse it without touching the LLM.
+        # Возобновление: прошлый прогон этого документа уже перевёл
+        # сегмент — берём из чекпойнта, не трогая LLM.
         if self.checkpoint is not None:
             done = self.checkpoint.get(segment.source_text)
             if done is not None:
@@ -180,7 +187,7 @@ class Translator:
             context = self.retriever.build(segment.source_text)
             segment.tm_examples = context.get("tm_examples", [])
             segment.glossary_hits = context.get("glossary_hits", [])
-            # Exact TM hit: reuse the stored translation, skip the LLM.
+            # Точное совпадение в памяти переводов: берём готовое, LLM не нужен.
             exact = context.get("exact_match")
             if exact:
                 segment.translation = exact
@@ -191,7 +198,8 @@ class Translator:
                              segment.id, len(segment.source_text))
                 return segment
 
-        # ИСПРАВЛЕНИЕ: Точный поиск терминов с использованием регулярных выражений (\b)
+        # Термины документа: точный поиск по границам слов (\b), чтобы
+        # 'ion' не находился внутри 'transformation'.
         doc_hits = []
         for t in self.doc_terms:
             pattern = r'\b' + re.escape(t["term"]) + r'\b'
@@ -218,11 +226,13 @@ class Translator:
         segment.attempts = 1
         self._finalize(segment, raw)
 
-        # Self-repair loop: feed validation issues back to the model.
+        # Цикл самопочинки: список проблем от валидаторов уходит модели
+        # вместе с её же прошлым ответом — пока не ок или не кончились попытки.
         while (
             not segment.ok and segment.attempts <= cfg.max_repair_attempts
         ):
-            # ИСПРАВЛЕНИЕ: Backoff - экспоненциальная задержка перед повторной попыткой
+            # Экспоненциальная пауза перед повторной попыткой — даём
+            # перегруженному провайдеру отдышаться (1с, 2с, ...).
             sleep_time = 2 ** (segment.attempts - 1)
             logger.info(
                 "Segment %s: repair attempt %d sleeping for %ds... (%s)", 
@@ -255,14 +265,14 @@ class Translator:
             segment.attempts, len(segment.issues),
             _time.monotonic() - started, "" if segment.ok else " [FAILED]",
         )
-        # Checkpoint only clean segments so a resumed run re-tries the
-        # bad ones instead of caching garbage.
+        # В чекпойнт — только чистые сегменты: возобновлённый прогон должен
+        # перепробовать проблемные, а не закэшировать мусор.
         if self.checkpoint is not None and segment.ok and segment.translation:
             self.checkpoint.put(segment.source_text, segment.translation)
         return segment
 
     def _finalize(self, segment: Segment, raw_translation: str) -> None:
-        """Unmask, validate and store the translation attempt."""
+        """Восстановить плейсхолдеры, провалидировать и сохранить попытку."""
         raw_translation = _strip_wrapping_fence(raw_translation.strip())
         restored, missing, unknown = unmask(raw_translation, segment.placeholders)
         segment.issues = []
@@ -293,26 +303,26 @@ class Translator:
         should_pause: Optional[Callable[[], bool]] = None,
         on_batch: Optional[Callable[[int, int], None]] = None,
     ) -> tuple[list[Segment], bool]:
-        """Translate every "translate"-kind segment in place.
+        """Перевести все сегменты вида "translate" на месте.
 
-        Returns ``(segments, paused)``. ``should_pause`` is polled between
-        segments (sequential mode) or after each completion (parallel
-        mode); once it returns True, no *new* segment translation is
-        started — in-flight ones are allowed to finish so their work
-        isn't wasted — and the method returns with ``paused=True``. The
-        untouched segments stay ``translation=None`` and get picked up by
-        the resume checkpoint on the next run.
+        Возвращает ``(segments, paused)``. ``should_pause`` опрашивается
+        между сегментами (последовательный режим) или после каждого
+        завершения (параллельный); как только он вернул True, новые
+        сегменты не стартуют — начатые довершаются, чтобы их работа не
+        пропала — и метод возвращает ``paused=True``. Нетронутые
+        сегменты остаются ``translation=None``, их подхватит чекпойнт
+        при возобновлении.
 
-        Segments are processed in batches of ``translate_batch_size``
-        (parallel mode gets a fresh, bounded ``ThreadPoolExecutor`` per
-        batch instead of one pool spanning the whole document) so a huge
-        document doesn't hold thousands of in-flight requests/threads at
-        once. ``on_batch(done, total)`` fires after every batch — the
-        pipeline uses it to write the partial document to disk and
-        recheck free memory before continuing.
+        Сегменты обрабатываются партиями по ``translate_batch_size``
+        (в параллельном режиме на каждую партию — свой ограниченный
+        ``ThreadPoolExecutor``, а не один пул на весь документ), чтобы
+        огромный документ не держал тысячи запросов/потоков разом.
+        ``on_batch(done, total)`` срабатывает после каждой партии —
+        пайплайн пишет частичный документ на диск и перепроверяет
+        свободную память, прежде чем продолжить.
         """
-        # Source-side context (parallel-safe): the tail of the previous
-        # segment's source text smooths chunk-boundary seams.
+        # Контекст с исходной стороны (безопасно для параллели): хвост
+        # предыдущего сегмента-источника разглаживает швы между кусками.
         ctx_chars = self.config.source_context_chars
         contexts: dict[str, str] = {}
         prev_source = ""
@@ -324,7 +334,7 @@ class Translator:
         to_translate = [s for s in segments if s.kind == "translate"]
         total = len(to_translate)
         done = 0
-        # 0/negative means "one batch, the whole document"
+        # 0/отрицательное = «одна партия на весь документ»
         batch_size = self.config.translate_batch_size
         if batch_size is None or batch_size <= 0:
             batch_size = total or 1
@@ -341,9 +351,9 @@ class Translator:
                     if on_batch:
                         on_batch(done, total)
                     return segments, True
-                # A single segment blowing up (provider outage) must not sink
-                # the whole document — flag it and keep going, same as the
-                # parallel path, so finished segments still get checkpointed.
+                # Взорвавшийся сегмент (отвал провайдера) не должен утопить
+                # весь документ: помечаем и идём дальше, как в параллельном
+                # пути — готовые сегменты всё равно попадут в чекпойнт.
                 try:
                     self.translate_segment(segment, contexts.get(segment.id, ""))
                 except Exception as exc:
@@ -375,9 +385,9 @@ class Translator:
                     try:
                         future.result()
                     except CancelledError:
-                        # paused before this one started; leave it for resume —
-                        # and don't count it as progress, or the frozen bar
-                        # would claim work that never happened
+                        # пауза случилась до старта этого сегмента; оставляем
+                        # его резюму — и не засчитываем в прогресс, иначе
+                        # замороженный бар покажет несделанную работу
                         segment.issues.append(_paused_issue())
                         continue
                     except Exception as exc:
@@ -396,12 +406,12 @@ class Translator:
                             "segment(s) cancelled, waiting for in-flight to finish",
                             done, total, cancelled,
                         )
-            # a fresh pool next batch releases this batch's threads now,
-            # rather than holding one pool open for the whole document
+            # свежий пул на следующую партию освобождает потоки этой прямо
+            # сейчас, а не держит один пул открытым на весь документ
             if on_batch:
                 on_batch(done, total)
             if paused:
-                # later batches were never even submitted — tag them too
+                # более поздние партии даже не отправлялись — пометим и их
                 for pending in to_translate[batch_start + len(batch):]:
                     if pending.translation is None:
                         pending.issues.append(_paused_issue())
@@ -410,9 +420,9 @@ class Translator:
 
 
 def _paused_issue() -> QAIssue:
-    """Marks a segment left untranslated by a pause request — a warning,
-    not an error: it wasn't attempted, so it didn't fail. Resuming the
-    job re-tries it via the checkpoint."""
+    """Метка сегмента, не переведённого из-за паузы — предупреждение,
+    не ошибка: его не пробовали, значит он не «провалился». Возобновление
+    задачи дойдёт до него через чекпойнт."""
     return QAIssue(
         "paused", "translation paused before this segment was reached; "
         "resume the job to continue", "warning",
@@ -420,7 +430,7 @@ def _paused_issue() -> QAIssue:
 
 
 def _strip_wrapping_fence(text: str) -> str:
-    """Models sometimes wrap the whole answer in a ``` fence — remove it."""
+    """Модели иногда заворачивают весь ответ в ```-ограду — снимаем её."""
     if text.startswith("```") and text.endswith("```"):
         body = text[3:-3]
         # drop optional language tag on the first line

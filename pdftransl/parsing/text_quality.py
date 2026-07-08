@@ -1,16 +1,16 @@
-"""Detect garbled ("кракозябры") text extraction.
+"""Детектор «кракозябр» — битого извлечения текста.
 
-Some PDFs — Cyberleninka and other Cyrillic scientific scans are the
-classic offenders — carry a text layer whose embedded fonts have no
-usable ToUnicode map. The page *looks* fine (glyphs are drawn), but a
-text extractor pulls out garbage: characters land in the Unicode
-Private Use Area, come back as U+FFFD replacement chars, or as
-mojibake. Feeding that to an LLM produces exactly the "долго думает и
-выдаёт кракозябры" symptom — the model dutifully "translates" noise.
+Некоторые PDF (классика — кириллические сканы с Cyberleninka) несут
+текстовый слой, чьи шрифты не имеют вменяемой ToUnicode-карты.
+Страница *выглядит* нормально (глифы рисуются), но экстрактор
+вытаскивает мусор: символы Private Use Area, U+FFFD, mojibake.
+Скормить это LLM — получить ровно тот самый симптом «долго думает и
+выдаёт кракозябры»: модель прилежно "переводит" шум.
 
-This is distinct from a scanned (image-only) page: here text *is*
-extracted, it's just wrong. Both problems have the same cure — OCR the
-rendered pages — so the pipeline routes garbled documents to OCR too.
+Это не то же самое, что скан (страницы-картинки): текст тут есть,
+просто неправильный. Лечение одно — OCR отрендеренных страниц, поэтому
+пайплайн уводит в OCR и такие документы. Здесь же —
+несовпадение языка/письменности (перепутанное направление перевода).
 """
 
 from __future__ import annotations
