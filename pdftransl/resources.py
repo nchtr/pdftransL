@@ -205,6 +205,10 @@ class Watchdog:
                     logger.debug("watchdog callback raised", exc_info=True)
 
     def __enter__(self) -> "Watchdog":
+        # the clock starts when monitoring starts, not at construction —
+        # otherwise setup time before `with` counts toward the first stall
+        self._last = self._clock()
+        self._stalled = False
         if self.stall_seconds > 0:
             self._thread = threading.Thread(target=self._run, daemon=True,
                                             name="pdftransl-watchdog")

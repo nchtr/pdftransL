@@ -196,7 +196,11 @@ def available_engines() -> dict[str, list[str]]:
     }
     if _pandoc_path():
         engines["docx"].append("pandoc")
-        engines["pdf"].append("pandoc")
+        # pandoc-for-PDF shells out to xelatex — without a TeX engine it
+        # always fails, so don't claim it (the "engine listed but export
+        # fails" bug class)
+        if _tex_engine() is not None:
+            engines["pdf"].append("pandoc")
     try:
         import docx  # noqa: F401
         engines["docx"].append("python-docx")
@@ -277,7 +281,8 @@ def export_document(
         pdf_path = out_base.with_suffix(".pdf")
         if not md_path.exists():
             md_path.write_text(markdown, encoding="utf-8")
-        if _pandoc_export(md_path, pdf_path, assets):
+        # pandoc's pdf route needs xelatex; skip the doomed attempt without it
+        if _tex_engine() is not None and _pandoc_export(md_path, pdf_path, assets):
             files["pdf"], engines["pdf"] = str(pdf_path), "pandoc"
         elif _chromium_pdf(html_path, pdf_path):
             files["pdf"], engines["pdf"] = str(pdf_path), "chromium"
