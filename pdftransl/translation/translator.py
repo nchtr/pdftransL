@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time as _time
 from concurrent.futures import CancelledError, ThreadPoolExecutor, as_completed
 from typing import Callable, Optional
 
@@ -160,7 +161,6 @@ class Translator:
         if segment.kind != "translate":
             return segment
 
-        import time as _time
         started = _time.monotonic()
         cfg = self.config
 
@@ -191,11 +191,13 @@ class Translator:
                              segment.id, len(segment.source_text))
                 return segment
 
-        # Per-document terms + stored glossary hits found in this segment.
-        doc_hits = [
-            t for t in self.doc_terms
-            if t["term"].lower() in segment.source_text.lower()
-        ]
+        # ИСПРАВЛЕНИЕ: Точный поиск терминов с использованием регулярных выражений (\b)
+        doc_hits = []
+        for t in self.doc_terms:
+            pattern = r'\b' + re.escape(t["term"]) + r'\b'
+            if re.search(pattern, segment.source_text, re.IGNORECASE):
+                doc_hits.append(t)
+                
         glossary_terms = doc_hits + (segment.glossary_hits or [])
         system = build_translation_system(
             cfg.source_lang,
@@ -220,6 +222,15 @@ class Translator:
         while (
             not segment.ok and segment.attempts <= cfg.max_repair_attempts
         ):
+            # ИСПРАВЛЕНИЕ: Backoff - экспоненциальная задержка перед повторной попыткой
+            sleep_time = 2 ** (segment.attempts - 1)
+            logger.info(
+                "Segment %s: repair attempt %d sleeping for %ds... (%s)", 
+                segment.id, segment.attempts, sleep_time,
+                "; ".join(i.code for i in segment.issues)
+            )
+            _time.sleep(sleep_time)
+
             issues_text = "\n".join(f"- {i.message}" for i in segment.issues)
             repair = REPAIR_USER.format(
                 issues=issues_text,
@@ -230,11 +241,6 @@ class Translator:
                 {"role": "system", "content": system},
                 {"role": "user", "content": repair},
             ]
-            logger.info(
-                "Segment %s: repair attempt %d (%s)",
-                segment.id, segment.attempts,
-                "; ".join(i.code for i in segment.issues),
-            )
             raw = self.client.chat(
                 messages_fix, temperature=cfg.temperature,
                 max_tokens=cfg.max_output_tokens,

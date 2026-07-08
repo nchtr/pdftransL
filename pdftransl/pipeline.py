@@ -53,6 +53,27 @@ StageCb = Callable[[str, float], None]  # (stage_name, progress 0..1)
 _OCR_BACKENDS = {"mineru_local", "mineru_api", "vlm_ocr"}
 
 
+def _is_garbage_markdown(md_text: str) -> bool:
+    """Не выдал ли парсер откровенный мусор (кракозябры/заполнители).
+
+    Пост-парсинговая страховка: даже если детектор сканов пропустил
+    документ, мусорный результат бэкенда отбрасывается и срабатывает
+    фолбэк на следующий (в идеале — VLM-OCR). Переиспользует калиброванный
+    детектор из ``parsing.text_quality`` (PUA-глифы, mojibake, доля
+    осмысленных символов, минимальная длина): первоначальная встроенная
+    эвристика с порогом «<40% букв» ложно браковала страницы, насыщенные
+    формулами/таблицами, а пустая альтернатива ``||`` в её regex
+    совпадала в каждой позиции — под неё «мусором» был любой текст.
+    Короткие документы (<200 значимых символов) не бракуем: однострочный
+    PDF — это валидный результат, а не мусор.
+    """
+    from pdftransl.parsing.text_quality import is_garbled
+
+    if not md_text or not md_text.strip():
+        return True
+    return is_garbled(md_text)
+
+
 def _build_client(config: PipelineConfig) -> BaseLLMClient:
     # shared throttles: the whole chain respects one rpm budget and one
     # 429 cooldown — a rate-limited provider pauses every worker at once
@@ -110,6 +131,7 @@ class TranslationPipeline:
         self._vision_client_cached: Optional[BaseLLMClient] = None
         self._vision_client_built = False
         self._memory_warning: Optional[str] = None
+        self._stall_warning: Optional[str] = None # ИСПРАВЛЕНИЕ: отдельная переменная для стагнации сети
 
     # ------------------------------------------------------------------
     def run(
@@ -179,6 +201,9 @@ class TranslationPipeline:
                 result.report["parse_cache"] = "hit"
             if self._memory_warning:
                 result.report["memory_warning"] = self._memory_warning
+            if self._stall_warning: # ИСПРАВЛЕНИЕ: Выводим сетевую ошибку раздельно
+                result.report["stall_warning"] = self._stall_warning
+                
             report_path = out_dir / "report.json"
             result.report_path = str(report_path)
             result.save_report(report_path)
@@ -330,6 +355,11 @@ class TranslationPipeline:
             ticker = threading.Thread(target=_tick, daemon=True, name="parse-ticker")
             ticker.start()
 
+        # Лучший из «мусорных» результатов: если ни один бэкенд не дал
+        # чистого текста (типично: битый PDF без vision-модели), честнее
+        # вернуть его с предупреждением в отчёте, чем провалить всю задачу.
+        garbage_fallback = None
+        garbage_backend = None
         try:
             for i, backend in enumerate(attempts):
                 if backend.name in tried:
@@ -343,6 +373,23 @@ class TranslationPipeline:
                             " (fallback)" if i else "")
                 try:
                     parsed = backend.parse(pdf_path, workdir / backend.name)
+
+                    # Пост-парсинговая проверка: мусорный Markdown (кракозябры)
+                    # отбрасываем и форсируем фолбэк на следующий бэкенд —
+                    # в идеале до VLM-OCR, который прочитает страницу заново.
+                    if backend.name != "vlm_ocr" and _is_garbage_markdown(parsed.markdown):
+                        logger.warning(
+                            "Backend '%s' extracted garbage text; forcing fallback.",
+                            backend.name,
+                        )
+                        if garbage_fallback is None:
+                            garbage_fallback = parsed
+                            garbage_backend = backend
+                        raise ParserError(
+                            "Extracted markdown failed heuristic quality check "
+                            "(garbage text)."
+                        )
+
                 except ParserError as exc:
                     errors.append(f"{backend.name}: {exc}")
                     logger.warning("Backend '%s' failed: %s", backend.name, exc)
@@ -354,6 +401,20 @@ class TranslationPipeline:
                     except OSError as exc:
                         logger.warning("Parse cache write failed: %s", exc)
                 return parsed
+
+            if garbage_fallback is not None:
+                # вся цепочка дала только мусор — отдаём его с предупреждением
+                # (scan_warning уже помечает документ как ненадёжный), кэш
+                # НЕ пишем: следующая попытка с vision-моделью должна парсить
+                # заново, а не переиспользовать мусор
+                logger.warning(
+                    "All backends produced garbage text; returning the '%s' "
+                    "result with a warning instead of failing the job",
+                    garbage_backend.name,
+                )
+                return self._annotate_parse(
+                    garbage_fallback, scan, garbage_backend, primary, errors
+                )
 
             raise ParserError(
                 "All parsing backends failed:\n  " + "\n  ".join(errors)
@@ -458,7 +519,8 @@ class TranslationPipeline:
                 "LLM may be unresponsive (model loading, overloaded, or hung)",
                 job_id, idle,
             )
-            self._memory_warning = self._memory_warning or (
+            # ИСПРАВЛЕНИЕ: Используем выделенный флаг вместо флага памяти
+            self._stall_warning = (
                 f"Translation stalled for {idle:.0f}s — the model provider seems "
                 "unresponsive (loading a large model, out of memory, or hung)."
             )
@@ -476,9 +538,12 @@ class TranslationPipeline:
         # most one batch's worth of work instead of everything.
         output_path = out_dir / output_name
 
+        # ИСПРАВЛЕНИЕ: Безопасная атомарная запись файлов
         def write_partial() -> None:
             translated_md = assemble([s.final_text() for s in segments])
-            output_path.write_text(translated_md, encoding="utf-8")
+            tmp_path = output_path.with_suffix(".tmp")
+            tmp_path.write_text(translated_md, encoding="utf-8")
+            tmp_path.replace(output_path) # Атомарно!
 
         def on_batch(done: int, total: int) -> None:
             write_partial()
@@ -606,7 +671,13 @@ class TranslationPipeline:
             for asset in parsed.assets:
                 src = Path(asset.path)
                 if src.exists():
-                    dst = assets_dir / (asset.rel_path or src.name)
+                    dst = (assets_dir / (asset.rel_path or src.name)).resolve()
+                    
+                    # ИСПРАВЛЕНИЕ: Защита ZipSlip (Path Traversal) при работе с путями из парсера
+                    if not dst.is_relative_to(assets_dir.resolve()):
+                        logger.warning("[%s] prevented path traversal for asset %s", job_id, asset.rel_path)
+                        continue
+                        
                     dst.parent.mkdir(parents=True, exist_ok=True)
                     if src.resolve() != dst.resolve():
                         try:
