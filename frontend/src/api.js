@@ -21,6 +21,8 @@ export const api = {
       body: JSON.stringify({ corrected }),
     }),
   rebuild: (id) => json(`/api/jobs/${id}/rebuild/`, { method: 'POST' }),
+  pauseJob: (id) => json(`/api/jobs/${id}/pause/`, { method: 'POST' }),
+  resumeJob: (id) => json(`/api/jobs/${id}/resume/`, { method: 'POST' }),
   tmStats: () => json('/api/tm/stats/'),
   glossary: () => json('/api/glossary/'),
   addTerm: (term, translation, sourceLang, targetLang) =>

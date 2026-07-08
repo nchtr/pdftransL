@@ -127,6 +127,7 @@ progress { width: 100%; height: 6px; }
 .badge.status-partial { background: #fef3c7; color: var(--warn); }
 .badge.status-failed { background: #fee2e2; color: var(--err); }
 .badge.status-running { background: #dbeafe; color: var(--accent); }
+.badge.status-paused { background: #e5e7eb; color: var(--muted); }
 .badge.human { background: #ede9fe; color: #7c3aed; margin-left: 0.5rem; }
 
 /* detail */

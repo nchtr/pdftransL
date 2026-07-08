@@ -32,6 +32,7 @@ class TranslationJob(models.Model):
         COMPLETED = "completed"
         PARTIAL = "partial"          # finished, but some segments flagged
         FAILED = "failed"
+        PAUSED = "paused"            # stopped on request; resumable from checkpoint
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     pdf = models.FileField(upload_to="input/%Y/%m/")
@@ -48,6 +49,10 @@ class TranslationJob(models.Model):
     status = models.CharField(
         max_length=16, choices=Status.choices, default=Status.QUEUED
     )
+    # Set by the /pause/ endpoint while a job is queued or running; the
+    # worker polls it between segments and stops cooperatively, flipping
+    # status to PAUSED once it actually has. Cleared on resume.
+    pause_requested = models.BooleanField(default=False)
     stage = models.CharField(max_length=32, blank=True, default="")
     progress = models.FloatField(default=0.0)
 
@@ -76,6 +81,7 @@ class TranslationJob(models.Model):
             "model": self.model,
             "options": self.options,
             "status": self.status,
+            "pause_requested": self.pause_requested,
             "stage": self.stage,
             "progress": self.progress,
             "formats": [f for f, p in (self.outputs or {}).items() if p],

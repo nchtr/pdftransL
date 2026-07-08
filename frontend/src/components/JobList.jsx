@@ -4,6 +4,7 @@ const STATUS_LABELS = {
   completed: 'готово',
   partial: 'готово (есть проблемы)',
   failed: 'ошибка',
+  paused: 'на паузе',
 }
 
 export default function JobList({ jobs, selectedId, onSelect, onDelete }) {

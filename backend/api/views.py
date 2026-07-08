@@ -181,6 +181,31 @@ def job_detail(request, job_id):
     return JsonResponse({"deleted": True})
 
 
+@csrf_exempt
+@require_POST
+def job_pause(request, job_id):
+    job = _job_or_404(job_id)
+    if job.status not in (TranslationJob.Status.QUEUED, TranslationJob.Status.RUNNING):
+        return JsonResponse(
+            {"error": f"cannot pause a job in status '{job.status}'"}, status=409
+        )
+    services.pause_job(job)
+    return JsonResponse({"pause_requested": True, "status": job.status})
+
+
+@csrf_exempt
+@require_POST
+def job_resume(request, job_id):
+    job = _job_or_404(job_id)
+    if job.status != TranslationJob.Status.PAUSED:
+        return JsonResponse(
+            {"error": f"cannot resume a job in status '{job.status}'"}, status=409
+        )
+    services.prepare_resume(job)
+    mode = dispatch_job(str(job.pk))
+    return JsonResponse({"status": job.status, "dispatch": mode})
+
+
 @require_GET
 def job_events(request, job_id):
     """Server-Sent Events stream of job progress.
@@ -190,7 +215,7 @@ def job_events(request, job_id):
     instead of polling; polling keeps working either way.
     """
     _job_or_404(job_id)  # 404 early, before we start streaming
-    terminal = {"completed", "partial", "failed"}
+    terminal = {"completed", "partial", "failed", "paused"}
 
     def stream():
         last = None
