@@ -6,13 +6,16 @@ auth (session/token) before exposing publicly.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
-from collections import defaultdict, deque
+import shutil
 from pathlib import Path
 
+from asgiref.sync import sync_to_async
 from django.conf import settings
+from django.core.cache import cache
 from django.http import (
     FileResponse,
     Http404,
@@ -83,18 +86,19 @@ def _engine_config() -> PipelineConfig:
 
 # --- jobs -------------------------------------------------------------
 
-# per-IP upload timestamps for the throttle (in-memory: per process)
-_upload_log: dict[str, deque] = defaultdict(deque)
-
-
 def _upload_allowed(ip: str) -> bool:
-    now = time.time()
-    log = _upload_log[ip]
-    while log and now - log[0] > 3600:
-        log.popleft()
-    if len(log) >= settings.UPLOADS_PER_HOUR:
+    """ИСПРАВЛЕНИЕ: Использование кэша (Redis/Memcached) вместо локального словаря."""
+    cache_key = f"upload_ratelimit_{ip}"
+    count = cache.get(cache_key, 0)
+    
+    if count >= settings.UPLOADS_PER_HOUR:
         return False
-    log.append(now)
+        
+    if count == 0:
+        cache.set(cache_key, 1, timeout=3600)
+    else:
+        cache.incr(cache_key)
+        
     return True
 
 
@@ -173,14 +177,13 @@ def job_detail(request, job_id):
     if job.status == TranslationJob.Status.RUNNING:
         return JsonResponse({"error": "job is running; wait for it to finish"},
                             status=409)
-    import shutil
 
     output_root = Path(settings.PDFTRANSL_OUTPUT_DIR).resolve()
     md = (job.outputs or {}).get("md")
     if md:
         out_dir = Path(md).resolve().parent
-        # never delete outside the configured output root
-        if out_dir.exists() and str(out_dir).startswith(str(output_root)):
+        # ИСПРАВЛЕНИЕ: Защита от Path Traversal, удаляем только вложенные папки, а не корень
+        if out_dir.exists() and out_dir.is_relative_to(output_root) and out_dir != output_root:
             shutil.rmtree(out_dir, ignore_errors=True)
     try:
         job.pdf.delete(save=False)
@@ -215,26 +218,15 @@ def job_resume(request, job_id):
     return JsonResponse({"status": job.status, "dispatch": mode})
 
 
-@require_GET
-def job_events(request, job_id):
-    """Server-Sent Events stream of job progress.
-
-    Emits a `data:` line whenever status/stage/progress/ETA changes and
-    closes on a terminal status. Frontends may use EventSource here
-    instead of polling; polling keeps working either way. ``eta_seconds``
-    is recomputed every tick, so while running this naturally emits about
-    once a second — a live countdown, not just a change notification.
-    """
-    _job_or_404(job_id)  # 404 early, before we start streaming
-    terminal = {"completed", "partial", "failed", "paused"}
-
-    def stream():
-        last = None
-        for _ in range(1800):  # safety cap: ~30 min
-            try:
-                job = TranslationJob.objects.get(pk=job_id)
-            except TranslationJob.DoesNotExist:
-                break
+# ИСПРАВЛЕНИЕ: Асинхронный стрим (предотвращает блокировку Gunicorn-воркеров)
+async def job_events(request, job_id):
+    """Server-Sent Events stream of job progress."""
+    
+    # Изолируем синхронный ORM от асинхронного лупа
+    @sync_to_async
+    def get_job_data():
+        try:
+            job = TranslationJob.objects.get(pk=job_id)
             eta = job.eta_seconds()
             payload = json.dumps({
                 "status": job.status,
@@ -243,12 +235,33 @@ def job_events(request, job_id):
                 "pause_requested": job.pause_requested,
                 "eta_seconds": round(eta) if eta is not None else None,
             })
+            return payload, job.status
+        except TranslationJob.DoesNotExist:
+            return None, None
+
+    # Провалидируем перед стримом
+    payload, status = await get_job_data()
+    if payload is None:
+        raise Http404
+
+    terminal = {"completed", "partial", "failed", "paused"}
+
+    async def stream():
+        last = None
+        for _ in range(1800):  # safety cap: ~30 min
+            payload, status = await get_job_data()
+            if payload is None:
+                break
+            
             if payload != last:
                 last = payload
                 yield f"data: {payload}\n\n"
-            if job.status in terminal:
+                
+            if status in terminal:
                 break
-            time.sleep(1)
+                
+            # Важно: Неблокирующее ожидание!
+            await asyncio.sleep(1)
 
     response = StreamingHttpResponse(stream(), content_type="text/event-stream")
     response["Cache-Control"] = "no-cache"
@@ -256,27 +269,24 @@ def job_events(request, job_id):
     return response
 
 
-@require_GET
-def jobs_events(request):
-    """Server-Sent Events stream of the whole job list.
+# ИСПРАВЛЕНИЕ: Асинхронный стрим
+async def jobs_events(request):
+    """Server-Sent Events stream of the whole job list."""
 
-    Pushes the list whenever any job's status/stage/progress changes, so
-    the web page's job list doesn't need to poll ``/api/jobs/`` on a
-    timer — one persistent connection instead of a request every few
-    seconds. Falls back the same way ``job_events`` does: the browser's
-    EventSource auto-reconnects if this closes (30-minute safety cap) or
-    errors out.
-    """
+    @sync_to_async
+    def get_jobs_payload():
+        items = [j.as_list_dict() for j in TranslationJob.objects.all()[:100]]
+        return json.dumps({"jobs": items})
 
-    def stream():
+    async def stream():
         last = None
         for _ in range(1800):  # safety cap: ~30 min; EventSource reconnects
-            items = [j.as_list_dict() for j in TranslationJob.objects.all()[:100]]
-            payload = json.dumps({"jobs": items})
+            payload = await get_jobs_payload()
             if payload != last:
                 last = payload
                 yield f"data: {payload}\n\n"
-            time.sleep(1)
+            # Важно: Неблокирующее ожидание!
+            await asyncio.sleep(1)
 
     response = StreamingHttpResponse(stream(), content_type="text/event-stream")
     response["Cache-Control"] = "no-cache"
@@ -305,15 +315,23 @@ def job_segments(request, job_id):
 @require_POST
 def segment_correct(request, job_id, order):
     job = _job_or_404(job_id)
+    # ИСПРАВЛЕНИЕ: Защита от ValueError, предотвращаем падение 500
+    try:
+        order_int = int(order)
+    except ValueError:
+        return JsonResponse({"error": "order must be an integer"}, status=400)
+        
     try:
         body = json.loads(request.body)
         corrected = body["corrected"]
     except (ValueError, KeyError):
         return JsonResponse({"error": "expected JSON {corrected}"}, status=400)
+        
     try:
-        segment = services.save_correction(job, int(order), corrected)
+        segment = services.save_correction(job, order_int, corrected)
     except SegmentRecord.DoesNotExist:
         raise Http404
+        
     return JsonResponse(segment.as_dict())
 
 
@@ -456,8 +474,16 @@ def server_settings(request):
             continue
         expected = _SETTING_TYPES[key]
         try:
+            # ИСПРАВЛЕНИЕ: Строгая валидация типов (особенно bool) вместо затирания ошибок
             if expected is bool:
-                value = value if isinstance(value, bool) else str(value).lower() in ("1", "true", "yes", "on")
+                if isinstance(value, bool):
+                    pass
+                elif str(value).lower() in ("1", "true", "yes", "on"):
+                    value = True
+                elif str(value).lower() in ("0", "false", "no", "off"):
+                    value = False
+                else:
+                    raise ValueError(f"must be a boolean, got {value}")
             elif expected is int:
                 value = int(value)
             elif expected is list:
@@ -466,8 +492,8 @@ def server_settings(request):
                 value = list(value)
             else:
                 value = str(value)
-        except (TypeError, ValueError):
-            errors[key] = f"expected {expected.__name__}"
+        except (TypeError, ValueError) as exc:
+            errors[key] = str(exc)
             continue
         data[key] = value
     if errors:

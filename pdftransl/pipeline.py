@@ -14,6 +14,7 @@ import logging
 import shutil
 import threading
 import time
+import re
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -46,6 +47,32 @@ StageCb = Callable[[str, float], None]  # (stage_name, progress 0..1)
 
 # Backends that already handle scanned pages (OCR); others get scan detection.
 _OCR_BACKENDS = {"mineru_local", "mineru_api", "vlm_ocr"}
+
+
+# ИСПРАВЛЕНИЕ: Эвристический детектор мусорного текста от старых парсеров
+def _is_garbage_markdown(md_text: str) -> bool:
+    """Определяет, не выдал ли парсер/OCR откровенный мусор (кракозябры/символы)."""
+    if not md_text:
+        return True
+        
+    md_text = md_text.strip()
+    if len(md_text) < 50: 
+        return True
+        
+    total_chars = len(md_text)
+    letters = sum(1 for c in md_text if c.isalpha())
+    letter_ratio = letters / total_chars
+    
+    # Если в тексте меньше 40% реальных букв - это почти наверняка мусор
+    if letter_ratio < 0.40:
+        return True
+        
+    # Ищем артефакты OCR (повторяющиеся точки, запятые, нечитаемые юникод-символы)
+    bad_patterns = len(re.findall(r'(\.\s*){4,}|(,\s*){4,}||<0x[0-9A-Fa-f]{2}>', md_text))
+    if bad_patterns > (total_chars / 500): 
+        return True
+        
+    return False
 
 
 def _build_client(config: PipelineConfig) -> BaseLLMClient:
@@ -105,6 +132,7 @@ class TranslationPipeline:
         self._vision_client_cached: Optional[BaseLLMClient] = None
         self._vision_client_built = False
         self._memory_warning: Optional[str] = None
+        self._stall_warning: Optional[str] = None # ИСПРАВЛЕНИЕ: отдельная переменная для стагнации сети
 
     # ------------------------------------------------------------------
     def run(
@@ -174,6 +202,9 @@ class TranslationPipeline:
                 result.report["parse_cache"] = "hit"
             if self._memory_warning:
                 result.report["memory_warning"] = self._memory_warning
+            if self._stall_warning: # ИСПРАВЛЕНИЕ: Выводим сетевую ошибку раздельно
+                result.report["stall_warning"] = self._stall_warning
+                
             report_path = out_dir / "report.json"
             result.report_path = str(report_path)
             result.save_report(report_path)
@@ -338,6 +369,15 @@ class TranslationPipeline:
                             " (fallback)" if i else "")
                 try:
                     parsed = backend.parse(pdf_path, workdir / backend.name)
+                    
+                    # ИСПРАВЛЕНИЕ: Детектируем мусорный Markdown и форсируем фоллбек к VLM
+                    if backend.name != "vlm_ocr" and _is_garbage_markdown(parsed.markdown):
+                        logger.warning(
+                            "Backend '%s' extracted garbage text. Discarding result and forcing fallback.", 
+                            backend.name
+                        )
+                        raise ParserError("Extracted markdown failed heuristic quality check (garbage text).")
+
                 except ParserError as exc:
                     errors.append(f"{backend.name}: {exc}")
                     logger.warning("Backend '%s' failed: %s", backend.name, exc)
@@ -453,7 +493,8 @@ class TranslationPipeline:
                 "LLM may be unresponsive (model loading, overloaded, or hung)",
                 job_id, idle,
             )
-            self._memory_warning = self._memory_warning or (
+            # ИСПРАВЛЕНИЕ: Используем выделенный флаг вместо флага памяти
+            self._stall_warning = (
                 f"Translation stalled for {idle:.0f}s — the model provider seems "
                 "unresponsive (loading a large model, out of memory, or hung)."
             )
@@ -471,9 +512,12 @@ class TranslationPipeline:
         # most one batch's worth of work instead of everything.
         output_path = out_dir / output_name
 
+        # ИСПРАВЛЕНИЕ: Безопасная атомарная запись файлов
         def write_partial() -> None:
             translated_md = assemble([s.final_text() for s in segments])
-            output_path.write_text(translated_md, encoding="utf-8")
+            tmp_path = output_path.with_suffix(".tmp")
+            tmp_path.write_text(translated_md, encoding="utf-8")
+            tmp_path.replace(output_path) # Атомарно!
 
         def on_batch(done: int, total: int) -> None:
             write_partial()
@@ -601,7 +645,13 @@ class TranslationPipeline:
             for asset in parsed.assets:
                 src = Path(asset.path)
                 if src.exists():
-                    dst = assets_dir / (asset.rel_path or src.name)
+                    dst = (assets_dir / (asset.rel_path or src.name)).resolve()
+                    
+                    # ИСПРАВЛЕНИЕ: Защита ZipSlip (Path Traversal) при работе с путями из парсера
+                    if not dst.is_relative_to(assets_dir.resolve()):
+                        logger.warning("[%s] prevented path traversal for asset %s", job_id, asset.rel_path)
+                        continue
+                        
                     dst.parent.mkdir(parents=True, exist_ok=True)
                     if src.resolve() != dst.resolve():
                         try:
