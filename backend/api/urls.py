@@ -6,6 +6,7 @@ app_name = "api"
 
 urlpatterns = [
     path("jobs/", views.jobs, name="jobs"),
+    path("jobs/events/", views.jobs_events, name="jobs-events"),
     path("jobs/<uuid:job_id>/", views.job_detail, name="job-detail"),
     path("jobs/<uuid:job_id>/events/", views.job_events, name="job-events"),
     path("jobs/<uuid:job_id>/pause/", views.job_pause, name="job-pause"),

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import shutil
+import threading
 import time
 from pathlib import Path
 from typing import Callable, Optional
@@ -26,6 +27,7 @@ from pdftransl.models import JobResult, ParsedDocument, new_id
 from pdftransl.parsing.base import get_backend
 from pdftransl.parsing.cache import ParseCache
 from pdftransl.parsing.splitter import assemble, mark_references, split_markdown
+from pdftransl.progress import StageTracker, build_stage_plan
 from pdftransl.quality.backtranslation import check_segments as backtranslation_check
 from pdftransl.quality.latex_check import check_document as latex_check
 from pdftransl.quality.reviewer import Reviewer
@@ -121,6 +123,12 @@ class TranslationPipeline:
         with whatever was translated so far already written to disk. A
         later call with ``resume`` enabled in the config picks up from the
         per-document checkpoint instead of re-translating everything.
+
+        Progress reported via ``on_stage`` is a precise 0..1 number
+        computed from a stage plan built for *this* config (see
+        ``pdftransl.progress``) — stages this job won't run (review,
+        back-translation, export...) contribute nothing to the bar,
+        instead of a one-size-fits-all fixed split.
         """
         job_id = job_id or new_id("job_")
         pdf_path = Path(pdf_path)
@@ -128,15 +136,22 @@ class TranslationPipeline:
         out_dir.mkdir(parents=True, exist_ok=True)
         started = time.time()
 
-        def stage(name: str, progress: float) -> None:
+        plan = build_stage_plan(self.config)
+
+        def _forward(name: str, progress: float) -> None:
             logger.info("[%s] stage=%s progress=%.0f%%", job_id, name, progress * 100)
             if on_stage:
                 on_stage(name, progress)
 
+        tracker = StageTracker(plan, _forward)
+
+        def stage(name: str, fraction: float = 0.0) -> None:
+            tracker.enter(name, fraction)
+
         try:
             self._log_memory("before parse", job_id)
             stage("parse", 0.0)
-            parsed = self._parse(pdf_path, out_dir / "parse")
+            parsed = self._parse(pdf_path, out_dir / "parse", tracker)
             source_md_path = out_dir / f"{pdf_path.stem}.md"
             source_md_path.write_text(parsed.markdown, encoding="utf-8")
 
@@ -147,13 +162,14 @@ class TranslationPipeline:
             self._memory_guard(job_id, parsed.backend)
 
             result = self._translate_parsed(
-                parsed, out_dir, job_id, stage,
+                parsed, out_dir, job_id, stage, tracker,
                 output_name=f"{pdf_path.stem}.{self.config.target_lang}.md",
                 should_pause=should_pause,
             )
             result.source_markdown_path = str(source_md_path)
             result.report["duration_sec"] = round(time.time() - started, 1)
             result.report["parser_backend"] = parsed.backend
+            result.report["stage_plan"] = [s.to_dict() for s in plan]
             if parsed.meta.get("cache"):
                 result.report["parse_cache"] = "hit"
             if self._memory_warning:
@@ -223,17 +239,21 @@ class TranslationPipeline:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         parsed = ParsedDocument(source_path="", markdown=markdown, backend="markdown")
 
-        def stage(name: str, progress: float) -> None:
-            if on_stage:
-                on_stage(name, progress)
+        plan = build_stage_plan(self.config)
+        tracker = StageTracker(plan, on_stage)
+
+        def stage(name: str, fraction: float = 0.0) -> None:
+            tracker.enter(name, fraction)
 
         return self._translate_parsed(
-            parsed, output_path.parent, job_id, stage, output_name=output_path.name,
+            parsed, output_path.parent, job_id, stage, tracker, output_name=output_path.name,
             should_pause=should_pause,
         )
 
     # ------------------------------------------------------------------
-    def _parse(self, pdf_path: Path, workdir: Path) -> ParsedDocument:
+    def _parse(
+        self, pdf_path: Path, workdir: Path, tracker: Optional[StageTracker] = None,
+    ) -> ParsedDocument:
         from pdftransl.exceptions import ParserError
         from pdftransl.parsing.base import fallback_backends
         from pdftransl.parsing.scan_detect import scan_stats
@@ -285,33 +305,58 @@ class TranslationPipeline:
         )
         tried: set[str] = set()
         errors: list[str] = []
-        for i, backend in enumerate(attempts):
-            if backend.name in tried:
-                continue
-            tried.add(backend.name)
-            if cache is not None:
-                cached = cache.get(pdf_path, backend.name)
-                if cached is not None:
-                    return self._annotate_parse(cached, scan, backend, primary)
-            logger.info("Parsing %s with backend '%s'%s", pdf_path.name, backend.name,
-                        " (fallback)" if i else "")
-            try:
-                parsed = backend.parse(pdf_path, workdir / backend.name)
-            except ParserError as exc:
-                errors.append(f"{backend.name}: {exc}")
-                logger.warning("Backend '%s' failed: %s", backend.name, exc)
-                continue
-            parsed = self._annotate_parse(parsed, scan, backend, primary, errors)
-            if cache is not None:
-                try:
-                    cache.put(pdf_path, parsed)
-                except OSError as exc:
-                    logger.warning("Parse cache write failed: %s", exc)
-            return parsed
 
-        raise ParserError(
-            "All parsing backends failed:\n  " + "\n  ".join(errors)
-        )
+        # Rough visual progress during a long subprocess-based parse (MinerU
+        # etc. give no real completion %): a background tick nudges the
+        # "parse" stage forward based on elapsed time vs. the configured
+        # timeout, capped short of 100% so it never claims to be done before
+        # it actually is. Purely cosmetic — never affects the real result.
+        stop_ticker = threading.Event()
+
+        def _tick() -> None:
+            started = time.monotonic()
+            timeout = self.config.parser_timeout or 1800
+            while not stop_ticker.wait(2.0):
+                elapsed = time.monotonic() - started
+                tracker.enter("parse", min(0.92, elapsed / timeout))
+
+        ticker = None
+        if tracker is not None:
+            ticker = threading.Thread(target=_tick, daemon=True, name="parse-ticker")
+            ticker.start()
+
+        try:
+            for i, backend in enumerate(attempts):
+                if backend.name in tried:
+                    continue
+                tried.add(backend.name)
+                if cache is not None:
+                    cached = cache.get(pdf_path, backend.name)
+                    if cached is not None:
+                        return self._annotate_parse(cached, scan, backend, primary)
+                logger.info("Parsing %s with backend '%s'%s", pdf_path.name, backend.name,
+                            " (fallback)" if i else "")
+                try:
+                    parsed = backend.parse(pdf_path, workdir / backend.name)
+                except ParserError as exc:
+                    errors.append(f"{backend.name}: {exc}")
+                    logger.warning("Backend '%s' failed: %s", backend.name, exc)
+                    continue
+                parsed = self._annotate_parse(parsed, scan, backend, primary, errors)
+                if cache is not None:
+                    try:
+                        cache.put(pdf_path, parsed)
+                    except OSError as exc:
+                        logger.warning("Parse cache write failed: %s", exc)
+                return parsed
+
+            raise ParserError(
+                "All parsing backends failed:\n  " + "\n  ".join(errors)
+            )
+        finally:
+            stop_ticker.set()
+            if ticker is not None:
+                ticker.join(timeout=1.0)
 
     def _annotate_parse(self, parsed, scan, backend, primary, errors=None):
         """Attach scan / fallback warnings to a parsed document."""
@@ -345,6 +390,8 @@ class TranslationPipeline:
         out_dir: Path,
         job_id: str,
         stage: StageCb,
+        tracker: Optional[StageTracker] = None,
+        *,
         output_name: str,
         should_pause: Optional[Callable[[], bool]] = None,
     ) -> JobResult:
@@ -357,7 +404,7 @@ class TranslationPipeline:
         wrong_script = language_mismatch(parsed.markdown, cfg.source_lang)
 
         # 1. structural split; keep bibliography untranslated
-        stage("split", 0.05)
+        stage("split", 0.0)
         blocks = split_markdown(parsed.markdown)
         refs_skipped = mark_references(blocks) if cfg.skip_references else 0
         segments = build_segments(blocks, Masker(), cfg.chunk_char_budget)
@@ -369,12 +416,13 @@ class TranslationPipeline:
 
         # 2. document-level context: summary + auto-extracted glossary
         if cfg.doc_summary:
-            stage("context", 0.08)
+            stage("context", 0.0)
             self.translator.doc_summary = build_doc_summary(
                 parsed.markdown, self.client, cfg
             )
         if cfg.auto_glossary:
-            stage("context", 0.1)
+            # halfway through "context" if the summary above also ran
+            stage("context", 0.5 if cfg.doc_summary else 0.0)
             self.translator.doc_terms = extract_terms(
                 parsed.markdown, self.client, cfg
             )
@@ -414,25 +462,45 @@ class TranslationPipeline:
 
         def progress(done: int, total: int, _seg_id: str) -> None:
             watchdog.beat()
-            stage("translate", 0.1 + 0.5 * (done / max(total, 1)))
+            stage("translate", done / max(total, 1))
+
+        # Discrete write, done incrementally: assemble and save whatever is
+        # translated so far to disk after every batch, not just once at the
+        # very end. A hiccup in a later enrichment stage (or the process
+        # dying mid-translation on a very large document) then loses at
+        # most one batch's worth of work instead of everything.
+        output_path = out_dir / output_name
+
+        def write_partial() -> None:
+            translated_md = assemble([s.final_text() for s in segments])
+            output_path.write_text(translated_md, encoding="utf-8")
+
+        def on_batch(done: int, total: int) -> None:
+            write_partial()
+            # The OOM guard used to run once, between parse and translate.
+            # A big document can also build up memory pressure *during* a
+            # long translate stage (client buffers, GC lag, another process
+            # competing for RAM) — recheck between batches too.
+            if cfg.memory_guard and cfg.min_free_memory_mb:
+                from pdftransl.resources import wait_for_memory
+
+                stats = wait_for_memory(
+                    cfg.min_free_memory_mb, cfg.memory_wait_timeout, label=job_id,
+                )
+                if stats is not None and stats.available_mb < cfg.min_free_memory_mb:
+                    self._memory_warning = self._memory_warning or (
+                        f"Low memory during translation ({stats.available_mb:.0f} MB "
+                        f"free, {done}/{total} segments done); consider a smaller "
+                        "translate_batch_size, fewer workers, or a smaller model."
+                    )
 
         with watchdog:
             segments, paused = self.translator.translate_segments(
-                segments, progress=progress, should_pause=should_pause
+                segments, progress=progress, should_pause=should_pause,
+                on_batch=on_batch,
             )
 
-        # Discrete write: assemble and save the translation to disk right
-        # away, before the optional enrichment stages below (scoring,
-        # review, back-translation, export...) get anywhere near it. Each
-        # of those calls its own LLM and can stall or blow up; previously
-        # the whole document was only written at the very end, so a hiccup
-        # in *any* later stage lost the entire translation and surfaced as
-        # an empty result. Translating the document is the expensive,
-        # hard-to-repeat part — it must survive downstream trouble.
-        stage("assemble", 0.6)
-        output_path = out_dir / output_name
-        translated_md = assemble([s.final_text() for s in segments])
-        output_path.write_text(translated_md, encoding="utf-8")
+        write_partial()
 
         if paused:
             pending = sum(
@@ -444,7 +512,11 @@ class TranslationPipeline:
             report["paused"] = True
             report["segments_pending"] = pending
             report["segments_done"] = report["segments_translated"] - pending
-            stage("paused", 0.6)
+            # Freeze at wherever translation actually got to instead of
+            # jumping ahead to "assemble"'s slice — the document may be far
+            # from fully translated when a pause lands.
+            if tracker is not None:
+                tracker.freeze("paused")
             return JobResult(
                 job_id=job_id,
                 status="paused",
@@ -452,6 +524,10 @@ class TranslationPipeline:
                 report=report,
                 segments=[s.to_dict() for s in segments],
             )
+
+        # translation genuinely finished (not a pause) — the "assemble"
+        # slice of the bar is done, closing out translate's range too.
+        stage("assemble", 1.0)
 
         # Everything from here on is best-effort enrichment: if a stage
         # stalls or raises, log it, record it in the report and move on —
@@ -462,7 +538,7 @@ class TranslationPipeline:
         # 4. optional LLM-judge quality scoring (flags weak segments)
         quality_scores: dict = {}
         if cfg.quality_score:
-            stage("scoring", 0.62)
+            stage("scoring", 0.0)
             try:
                 from pdftransl.quality.scoring import score_segments
 
@@ -473,7 +549,7 @@ class TranslationPipeline:
 
         # 5. LLM review of flagged segments
         if self.reviewer is not None:
-            stage("review", 0.65)
+            stage("review", 0.0)
             try:
                 self.reviewer.review_segments(segments, only_flagged=True)
             except Exception as exc:
@@ -485,7 +561,7 @@ class TranslationPipeline:
 
         # 6. optional back-translation semantic check
         if cfg.backtranslation_check:
-            stage("backtranslation", 0.72)
+            stage("backtranslation", 0.0)
             try:
                 backtranslation_check(segments, self.client, self.embedder, cfg)
             except Exception as exc:
@@ -499,7 +575,7 @@ class TranslationPipeline:
         latex_issues = latex_check(translated_md)
         latex_fixes: list = []
         if cfg.fix_latex and latex_issues:
-            stage("latex_fix", 0.8)
+            stage("latex_fix", 0.0)
             try:
                 from pdftransl.quality.latex_fix import fix_document
 
@@ -537,7 +613,7 @@ class TranslationPipeline:
         # 9. optional VLM figure descriptions
         figure_descriptions: dict = {}
         if cfg.describe_figures and parsed.assets:
-            stage("figures", 0.82)
+            stage("figures", 0.0)
             try:
                 vision_client = self._vision_client()
                 if vision_client is not None:
@@ -557,7 +633,7 @@ class TranslationPipeline:
         # 10. export to HTML / LaTeX / DOCX / PDF
         export_result = {"files": {}, "engines": {}}
         if cfg.export_formats:
-            stage("export", 0.88)
+            stage("export", 0.0)
             try:
                 title = _first_heading(translated_md) or output_path.stem
                 export_result = export_document(
@@ -577,7 +653,7 @@ class TranslationPipeline:
         # 10b. optional render check of the exported HTML (KaTeX errors)
         render_issues: list = []
         if cfg.render_check and export_result["files"].get("html"):
-            stage("render_check", 0.92)
+            stage("render_check", 0.0)
             try:
                 from pdftransl.quality.render_check import check_rendered_html
 
@@ -591,7 +667,7 @@ class TranslationPipeline:
         # "translations" are noise and would poison future exact-match
         # reuse (the "retry gives the same garbage" trap).
         if cfg.learn and self.tm is not None and not parsed.meta.get("scan_warning"):
-            stage("learn", 0.95)
+            stage("learn", 0.0)
             try:
                 learned = 0
                 for segment in segments:

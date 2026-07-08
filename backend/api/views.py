@@ -7,6 +7,7 @@ auth (session/token) before exposing publicly.
 from __future__ import annotations
 
 import json
+import logging
 import time
 from collections import defaultdict, deque
 from pathlib import Path
@@ -33,6 +34,8 @@ from . import services
 from .models import SegmentRecord, ServerConfig, TranslationJob
 from .tasks import dispatch_job
 
+logger = logging.getLogger(__name__)
+
 # keys the web UI may store as runtime server defaults (value type for
 # light validation; None value in a PUT removes the override)
 _SETTING_TYPES: dict[str, type] = {
@@ -40,6 +43,7 @@ _SETTING_TYPES: dict[str, type] = {
     "source_lang": str, "target_lang": str, "parser_backend": str,
     "domain": str, "fallback_providers": list, "formats": list,
     "max_workers": int, "rpm_limit": int, "parser_timeout": int, "ocr_dpi": int,
+    "translate_batch_size": int,
     "review": bool, "use_rag": bool, "learn": bool, "bilingual": bool,
     "describe_figures": bool, "backtranslation_check": bool,
     "doc_summary": bool, "auto_glossary": bool, "skip_references": bool,
@@ -147,6 +151,11 @@ def jobs(request):
         model=request.POST.get("model", ""),
         options=options,
     )
+    try:
+        job.stage_plan = services.compute_stage_plan(job)
+        job.save(update_fields=["stage_plan"])
+    except Exception:
+        logger.warning("Could not precompute stage plan for job %s", job.pk, exc_info=True)
     mode = dispatch_job(str(job.pk))
     return JsonResponse(
         {"job_id": str(job.pk), "status": job.status, "dispatch": mode}, status=202
@@ -228,12 +237,41 @@ def job_events(request, job_id):
                 "status": job.status,
                 "stage": job.stage,
                 "progress": job.progress,
+                "pause_requested": job.pause_requested,
             })
             if payload != last:
                 last = payload
                 yield f"data: {payload}\n\n"
             if job.status in terminal:
                 break
+            time.sleep(1)
+
+    response = StreamingHttpResponse(stream(), content_type="text/event-stream")
+    response["Cache-Control"] = "no-cache"
+    response["X-Accel-Buffering"] = "no"
+    return response
+
+
+@require_GET
+def jobs_events(request):
+    """Server-Sent Events stream of the whole job list.
+
+    Pushes the list whenever any job's status/stage/progress changes, so
+    the web page's job list doesn't need to poll ``/api/jobs/`` on a
+    timer — one persistent connection instead of a request every few
+    seconds. Falls back the same way ``job_events`` does: the browser's
+    EventSource auto-reconnects if this closes (30-minute safety cap) or
+    errors out.
+    """
+
+    def stream():
+        last = None
+        for _ in range(1800):  # safety cap: ~30 min; EventSource reconnects
+            items = [j.as_list_dict() for j in TranslationJob.objects.all()[:100]]
+            payload = json.dumps({"jobs": items})
+            if payload != last:
+                last = payload
+                yield f"data: {payload}\n\n"
             time.sleep(1)
 
     response = StreamingHttpResponse(stream(), content_type="text/event-stream")

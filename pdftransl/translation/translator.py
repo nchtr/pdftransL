@@ -232,6 +232,7 @@ class Translator:
         segments: list[Segment],
         progress: Optional[ProgressCb] = None,
         should_pause: Optional[Callable[[], bool]] = None,
+        on_batch: Optional[Callable[[int, int], None]] = None,
     ) -> tuple[list[Segment], bool]:
         """Translate every "translate"-kind segment in place.
 
@@ -242,6 +243,14 @@ class Translator:
         isn't wasted — and the method returns with ``paused=True``. The
         untouched segments stay ``translation=None`` and get picked up by
         the resume checkpoint on the next run.
+
+        Segments are processed in batches of ``translate_batch_size``
+        (parallel mode gets a fresh, bounded ``ThreadPoolExecutor`` per
+        batch instead of one pool spanning the whole document) so a huge
+        document doesn't hold thousands of in-flight requests/threads at
+        once. ``on_batch(done, total)`` fires after every batch — the
+        pipeline uses it to write the partial document to disk and
+        recheck free memory before continuing.
         """
         # Source-side context (parallel-safe): the tail of the previous
         # segment's source text smooths chunk-boundary seams.
@@ -256,6 +265,7 @@ class Translator:
         to_translate = [s for s in segments if s.kind == "translate"]
         total = len(to_translate)
         done = 0
+        batch_size = self.config.translate_batch_size or total or 1
 
         workers = max(1, self.config.max_workers)
         if workers == 1 or total <= 1:
@@ -266,6 +276,8 @@ class Translator:
                     logger.info(
                         "translation paused: %d/%d segment(s) done", done, total
                     )
+                    if on_batch:
+                        on_batch(done, total)
                     return segments, True
                 # A single segment blowing up (provider outage) must not sink
                 # the whole document — flag it and keep going, same as the
@@ -280,39 +292,55 @@ class Translator:
                 done += 1
                 if progress:
                     progress(done, total, segment.id)
+                if on_batch and done % batch_size == 0:
+                    on_batch(done, total)
+            if on_batch and done % batch_size != 0:
+                on_batch(done, total)
             return segments, False
 
         paused = False
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            futures = {
-                pool.submit(
-                    self.translate_segment, seg, contexts.get(seg.id, "")
-                ): seg
-                for seg in to_translate
-            }
-            for future in as_completed(futures):
-                segment = futures[future]
-                try:
-                    future.result()
-                except CancelledError:
-                    # paused before this one started; leave it for resume
-                    segment.issues.append(_paused_issue())
-                except Exception as exc:
-                    logger.error("Segment %s failed: %s", segment.id, exc)
-                    segment.issues.append(
-                        QAIssue("exception", f"translation call failed: {exc}", "error")
-                    )
-                done += 1
-                if progress:
-                    progress(done, total, segment.id)
-                if not paused and should_pause and should_pause():
-                    paused = True
-                    cancelled = sum(1 for f in futures if f.cancel())
-                    logger.info(
-                        "translation paused: %d/%d done, %d not-yet-started "
-                        "segment(s) cancelled, waiting for in-flight to finish",
-                        done, total, cancelled,
-                    )
+        for batch_start in range(0, total, batch_size):
+            batch = to_translate[batch_start:batch_start + batch_size]
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                futures = {
+                    pool.submit(
+                        self.translate_segment, seg, contexts.get(seg.id, "")
+                    ): seg
+                    for seg in batch
+                }
+                for future in as_completed(futures):
+                    segment = futures[future]
+                    try:
+                        future.result()
+                    except CancelledError:
+                        # paused before this one started; leave it for resume
+                        segment.issues.append(_paused_issue())
+                    except Exception as exc:
+                        logger.error("Segment %s failed: %s", segment.id, exc)
+                        segment.issues.append(
+                            QAIssue("exception", f"translation call failed: {exc}", "error")
+                        )
+                    done += 1
+                    if progress:
+                        progress(done, total, segment.id)
+                    if not paused and should_pause and should_pause():
+                        paused = True
+                        cancelled = sum(1 for f in futures if f.cancel())
+                        logger.info(
+                            "translation paused: %d/%d done, %d not-yet-started "
+                            "segment(s) cancelled, waiting for in-flight to finish",
+                            done, total, cancelled,
+                        )
+            # a fresh pool next batch releases this batch's threads now,
+            # rather than holding one pool open for the whole document
+            if on_batch:
+                on_batch(done, total)
+            if paused:
+                # later batches were never even submitted — tag them too
+                for pending in to_translate[batch_start + len(batch):]:
+                    if pending.translation is None:
+                        pending.issues.append(_paused_issue())
+                break
         return segments, paused
 
 

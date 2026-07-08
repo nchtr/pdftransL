@@ -11,6 +11,7 @@ from pdftransl.config import PipelineConfig
 from pdftransl.export.exporter import export_document
 from pdftransl.parsing.splitter import assemble
 from pdftransl.pipeline import TranslationPipeline
+from pdftransl.progress import build_stage_plan
 from pdftransl.rag.embeddings import get_embedder
 from pdftransl.rag.glossary import Glossary
 from pdftransl.rag.store import TranslationMemory
@@ -37,7 +38,7 @@ _STR_KEYS = (
 _INT_KEYS = (
     "max_workers", "rpm_limit", "parser_timeout", "ocr_dpi",
     "tm_autoexport_every", "min_free_memory_mb", "memory_wait_timeout",
-    "stall_warning_seconds", "max_ocr_pages",
+    "stall_warning_seconds", "max_ocr_pages", "translate_batch_size",
 )
 
 
@@ -120,6 +121,14 @@ def build_config(job: TranslationJob) -> PipelineConfig:
         overrides["model"] = job.model
     _apply_options(overrides, job.options or {})
     return PipelineConfig.from_env(**overrides)
+
+
+def compute_stage_plan(job: TranslationJob) -> list[dict]:
+    """Stage breakdown for this job's actual config — computed once at
+    creation time so the UI can render a per-stage progress view even
+    before the job starts running."""
+    config = build_config(job)
+    return [s.to_dict() for s in build_stage_plan(config)]
 
 
 def run_job(job_id: str) -> str:

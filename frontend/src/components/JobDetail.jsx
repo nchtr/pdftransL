@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { api } from '../api.js'
 import SegmentReview from './SegmentReview.jsx'
+import StageStepper from './StageStepper.jsx'
 
 const FORMAT_TITLES = {
   md: 'Markdown',
@@ -103,14 +104,23 @@ export default function JobDetail({ jobId, onClose, onError }) {
 
       <p>
         Статус: <b>{job.status}</b>
-        {job.stage && job.status === 'running' && (
-          <> · {job.stage} {Math.round(job.progress * 100)}%</>
+        {job.status === 'running' && (
+          <> · {Math.round(job.progress * 100)}% общий прогресс</>
         )}
         {job.pause_requested && job.status === 'running' && (
           <> · ставим на паузу…</>
         )}
       </p>
       {job.error && <p className="error-text">{job.error}</p>}
+
+      {['queued', 'running', 'paused', 'failed'].includes(job.status) && (
+        <StageStepper
+          plan={job.stage_plan}
+          stage={job.stage}
+          progress={job.progress}
+          status={job.status}
+        />
+      )}
 
       {(job.status === 'running' || job.status === 'queued') && (
         <div className="actions">

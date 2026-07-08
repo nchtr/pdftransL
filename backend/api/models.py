@@ -55,6 +55,10 @@ class TranslationJob(models.Model):
     pause_requested = models.BooleanField(default=False)
     stage = models.CharField(max_length=32, blank=True, default="")
     progress = models.FloatField(default=0.0)
+    # [{key, label, weight, start}, ...] from pdftransl.progress.build_stage_plan,
+    # computed once at creation time from this job's actual config — lets the UI
+    # render a per-stage breakdown instead of one flat percentage.
+    stage_plan = models.JSONField(default=list, blank=True)
 
     # format -> absolute path: md / html / docx / pdf / bilingual / report
     outputs = models.JSONField(default=dict, blank=True)
@@ -84,12 +88,21 @@ class TranslationJob(models.Model):
             "pause_requested": self.pause_requested,
             "stage": self.stage,
             "progress": self.progress,
+            "stage_plan": self.stage_plan,
             "formats": [f for f, p in (self.outputs or {}).items() if p],
             "report": self.report,
             "error": self.error or None,
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),
         }
+
+    def as_list_dict(self) -> dict:
+        """Lean payload for the job-list SSE stream: no ``report`` (can be
+        sizeable — LaTeX issues, segment previews...) since the list view
+        doesn't render it; JobDetail fetches the full record separately."""
+        d = self.as_dict()
+        d.pop("report", None)
+        return d
 
 
 class SegmentRecord(models.Model):

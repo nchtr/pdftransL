@@ -33,13 +33,29 @@ export default function App() {
     refreshJobs()
   }, [refreshJobs])
 
-  // poll while any job is active
+  // live job list: one persistent SSE connection instead of polling
+  // /api/jobs/ on an interval. Falls back to polling only if the browser
+  // has no EventSource or the stream errors out.
   useEffect(() => {
-    const active = jobs.some((j) => j.status === 'queued' || j.status === 'running')
-    if (!active) return undefined
-    const timer = setInterval(refreshJobs, 2000)
-    return () => clearInterval(timer)
-  }, [jobs, refreshJobs])
+    let timer = null
+    let source = null
+    if (typeof EventSource !== 'undefined') {
+      source = new EventSource('/api/jobs/events/')
+      source.onmessage = (event) => {
+        setJobs(JSON.parse(event.data).jobs)
+      }
+      source.onerror = () => {
+        source.close()
+        timer = setInterval(refreshJobs, 2000)
+      }
+    } else {
+      timer = setInterval(refreshJobs, 2000)
+    }
+    return () => {
+      if (source) source.close()
+      if (timer) clearInterval(timer)
+    }
+  }, [refreshJobs])
 
   const deleteJob = async (id) => {
     if (!confirm('Удалить задачу вместе с файлами результата?')) return

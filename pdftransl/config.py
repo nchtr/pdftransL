@@ -204,6 +204,7 @@ class PipelineConfig:
     # Chunking / throughput
     chunk_char_budget: int = 4000       # max chars of masked text per request
     max_workers: int = 4                # parallel segment translations (1 = sequential)
+    translate_batch_size: int = 40      # segments per batch (0 = one batch, whole doc at once)
 
     # Document-level translation context
     doc_summary: bool = True            # LLM summary of the paper in the system prompt
@@ -316,6 +317,8 @@ class PipelineConfig:
                 kwargs[attr] = env[flag].strip().lower() in ("1", "true", "yes", "on")
         if env.get("PDFTRANSL_MAX_WORKERS"):
             kwargs["max_workers"] = int(env["PDFTRANSL_MAX_WORKERS"])
+        if env.get("PDFTRANSL_TRANSLATE_BATCH_SIZE"):
+            kwargs["translate_batch_size"] = int(env["PDFTRANSL_TRANSLATE_BATCH_SIZE"])
         if env.get("PDFTRANSL_PARSER_TIMEOUT"):
             kwargs["parser_timeout"] = int(env["PDFTRANSL_PARSER_TIMEOUT"])
         if env.get("PDFTRANSL_OCR_DPI"):
