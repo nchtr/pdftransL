@@ -75,6 +75,14 @@ class Reviewer:
         revised = verdict.get("revised")
         if revised:
             restored, missing, unknown = unmask(revised.strip(), segment.placeholders)
+            # The reviewer sees the *restored* translation (real formulas,
+            # not tokens), so a good revision usually carries the actual
+            # content instead of ⟦PH…⟧ tokens. A token is only truly
+            # missing if its content is absent too — otherwise every
+            # revision of a placeholder-bearing segment would be rejected.
+            missing = [
+                t for t in missing if segment.placeholders[t] not in restored
+            ]
             # accept the revision only if it doesn't break placeholders
             if not missing and not unknown:
                 segment.translation = restored

@@ -101,7 +101,18 @@ class Segment:
         """Text that goes into the assembled output document."""
         if self.kind == "pass":
             return self.source_text
-        if self.translation:
+        # A translation that lost placeholder tokens is worse than no
+        # translation: the tokens stood for formulas, citations and links,
+        # so shipping it silently drops that content (or leaves mangled
+        # ⟦…⟧ junk). If the repair loop and reviewer couldn't recover the
+        # tokens, keep the segment in the source language — flagged in the
+        # QA report and fixable in the review UI — rather than lose math.
+        placeholders_lost = any(
+            i.severity == "error"
+            and i.code in ("placeholder_missing", "placeholder_unknown")
+            for i in self.issues
+        )
+        if self.translation and not placeholders_lost:
             return self.translation
         # Graceful degradation: keep source. Deliberately falsy-checked, not
         # `is not None` — a stalled/overloaded LLM can "answer" with an empty

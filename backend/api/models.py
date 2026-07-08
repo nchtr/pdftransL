@@ -145,7 +145,19 @@ class SegmentRecord(models.Model):
     def final_text(self) -> str:
         if self.kind != "translate":
             return self.source_text
-        return self.corrected or self.translation or self.source_text
+        if self.corrected:
+            return self.corrected
+        # Mirror pdftransl.models.Segment.final_text: a translation that
+        # lost placeholder tokens dropped formulas/citations — rebuilding
+        # outputs must fall back to the source, not reintroduce the damage.
+        placeholders_lost = any(
+            i.get("severity") == "error"
+            and i.get("code") in ("placeholder_missing", "placeholder_unknown")
+            for i in (self.issues or [])
+        )
+        if self.translation and not placeholders_lost:
+            return self.translation
+        return self.source_text
 
     def as_dict(self) -> dict:
         return {

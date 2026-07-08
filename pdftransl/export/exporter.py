@@ -294,4 +294,6 @@ def export_document(
 
     if md_path.exists():
         md_path.unlink()  # temp copy for pandoc
+    if "html" not in formats and html_path.exists():
+        html_path.unlink()  # was only the chromium-PDF input, not requested
     return {"files": files, "engines": engines}

@@ -144,11 +144,6 @@ _REFERENCES_HEADING_RE = re.compile(
     r"cited works|works cited)\s*$",
     re.IGNORECASE,
 )
-# Headings that end the references section (appendices etc.)
-_POST_REFERENCES_RE = re.compile(
-    r"^#{1,6}\s*(?:[A-Z]?\d*\.?\s*)?(appendix|supplementary|acknowledg|приложение)",
-    re.IGNORECASE,
-)
 
 
 def mark_references(blocks: list[Block]) -> int:
@@ -157,16 +152,20 @@ def mark_references(blocks: list[Block]) -> int:
     Reference entries (authors, titles, venues) should stay in the
     original language — translating them breaks citability. Returns
     the number of blocks marked.
+
+    ANY heading ends the section (and a references-like heading
+    re-enters it): a previous allow-list of "post-references" headings
+    (appendix, acknowledgements...) meant that a Conclusion,
+    Nomenclature or «Сведения об авторах» section after the
+    bibliography — or a bibliography a parser emitted mid-document —
+    silently disabled translation for everything that followed.
     """
     marked = 0
     in_refs = False
     for block in blocks:
         if block.type == BlockType.HEADING:
-            if _REFERENCES_HEADING_RE.match(block.text.strip()):
-                in_refs = True
-                continue  # the heading itself stays translatable
-            if in_refs and _POST_REFERENCES_RE.match(block.text.strip()):
-                in_refs = False
+            # the heading itself stays translatable either way
+            in_refs = bool(_REFERENCES_HEADING_RE.match(block.text.strip()))
         elif in_refs and block.translatable:
             block.translatable = False
             block.meta["skipped"] = "references"
