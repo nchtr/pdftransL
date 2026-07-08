@@ -30,8 +30,8 @@ def _add_common(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--source-lang", default=None)
     parser.add_argument("--target-lang", default=None)
     parser.add_argument("--backend", default=None,
-                        help="parser backend: auto|mineru_local|mineru_api|marker|"
-                             "docling|vlm_ocr|pymupdf")
+                        help="parser backend: auto|mineru_local|mineru_api|nougat|"
+                             "marker|docling|grobid|vlm_ocr|pymupdf")
     parser.add_argument("--vision-provider", default=None,
                         help="provider for VLM OCR / figure description (defaults to --provider)")
     parser.add_argument("--vision-model", default=None,

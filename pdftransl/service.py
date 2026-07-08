@@ -75,19 +75,30 @@ class TranslationService:
             target_lang=self.config.target_lang,
         )
 
-    def process(self, job_id: str) -> JobResult:
-        """Run a previously submitted job (call from a worker)."""
+    def process(self, job_id: str, on_stage=None) -> JobResult:
+        """Run a previously submitted job (call from a worker).
+
+        ``on_stage(stage, progress)`` — optional extra progress callback
+        (e.g. a Telegram status message); repository bookkeeping happens
+        either way, so job rows never linger as "queued" while a caller
+        drives the pipeline itself.
+        """
         job = self.repo.get(job_id)
         self.repo.update(job_id, status="running", stage="parse", progress=0.0)
 
-        def on_stage(stage: str, progress: float) -> None:
+        def _on_stage(stage: str, progress: float) -> None:
             try:
                 self.repo.update(job_id, stage=stage, progress=progress)
             except Exception:  # never let bookkeeping kill the run
                 logger.warning("Failed to persist progress for %s", job_id)
+            if on_stage is not None:
+                try:
+                    on_stage(stage, progress)
+                except Exception:
+                    logger.warning("External on_stage callback failed for %s", job_id)
 
         result = self.pipeline.run(
-            job["pdf_path"], job["output_dir"], job_id=job_id, on_stage=on_stage
+            job["pdf_path"], job["output_dir"], job_id=job_id, on_stage=_on_stage
         )
         self.repo.update(
             job_id,

@@ -37,8 +37,10 @@ _MASK_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
         re.compile(r"\\(?:cite[tp]?|ref|eqref|autoref|cref|label|url|href)\*?\{[^}]*\}"),
     ),
     ("citation", re.compile(r"\[\d+(?:\s*[,;–-]\s*\d+)*\]")),
-    ("url", re.compile(r"https?://[^\s)\]>]+")),
-    ("html_tag", re.compile(r"</?[a-zA-Z][^<>\n]*>")),
+    # ⟦⟧ excluded: a URL/tag must not swallow an already-inserted
+    # placeholder token, or the mapping nests (url containing masked math).
+    ("url", re.compile(r"https?://[^\s)\]>⟦⟧]+")),
+    ("html_tag", re.compile(r"</?[a-zA-Z][^<>\n⟦⟧]*>")),
 ]
 
 
@@ -75,18 +77,32 @@ def unmask(text: str, mapping: dict[str, str]) -> tuple[str, list[str], list[str
     Returns ``(restored_text, missing_tokens, unknown_tokens)`` where
     *missing* are expected tokens absent from the translation and
     *unknown* are placeholder-looking tokens the model hallucinated.
+
+    Substitution runs to a fixpoint: when patterns nest (a masked URL or
+    LaTeX \\ref whose body itself contains an earlier placeholder), the
+    inner token only appears *after* the outer one is expanded — a single
+    pass would leave it in the output as literal ``⟦PHn⟧`` junk and
+    misreport it as both missing and unknown.
     """
     restored = text
-    missing: list[str] = []
-    for token, original in mapping.items():
-        if token in restored:
-            restored = restored.replace(token, original)
-        else:
-            missing.append(token)
+    seen: set[str] = set()
+    # each pass can reveal at most one more nesting level; +1 for safety
+    for _ in range(len(mapping) + 1):
+        replaced_any = False
+        for token, original in mapping.items():
+            if token in restored:
+                restored = restored.replace(token, original)
+                seen.add(token)
+                replaced_any = True
+        if not replaced_any:
+            break
+    missing = [t for t in mapping if t not in seen]
     unknown = [
         m.group(0)
         for m in PLACEHOLDER_RE.finditer(restored)
-        # tokens still present after substitution were never in the mapping
+        if m.group(0) not in mapping
+        # in-mapping tokens can't survive the fixpoint loop above, so
+        # whatever placeholder-shaped text remains was hallucinated
     ]
     return restored, missing, unknown
 
