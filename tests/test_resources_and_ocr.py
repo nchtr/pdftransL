@@ -156,6 +156,105 @@ def test_deepseek_ocr_preset():
     assert preset.supports_vision and preset.is_local
 
 
+# ---- OCR artifact cleaning (leaked stop-tokens / hallucinations) ----------
+
+def test_clean_ocr_artifacts_strips_control_tokens():
+    from pdftransl.parsing.vlm_ocr_backend import clean_ocr_artifacts
+
+    assert clean_ocr_artifacts("Текст.<|im_end|>") == "Текст."
+    assert clean_ocr_artifacts("A<|endoftext|>B") == "AB"
+    assert clean_ocr_artifacts("Заголовок</s>") == "Заголовок"
+    assert clean_ocr_artifacts("row</angela> end") == "row end"
+
+
+def test_clean_ocr_artifacts_removes_none_run_but_keeps_word():
+    from pdftransl.parsing.vlm_ocr_backend import clean_ocr_artifacts
+
+    assert "None" not in clean_ocr_artifacts("| a | NoneNoneNoneNone |")
+    assert "None" in clean_ocr_artifacts("if x is None: pass")  # single is legit
+
+
+def test_clean_ocr_artifacts_preserves_real_markup():
+    from pdftransl.parsing.vlm_ocr_backend import clean_ocr_artifacts
+
+    html = "<table><tr><td>1</td></tr></table>"
+    assert clean_ocr_artifacts(html) == html
+    assert clean_ocr_artifacts("$E=mc^2$ and **bold**") == "$E=mc^2$ and **bold**"
+
+
+def test_transcribe_page_cleans_output(tmp_path):
+    from PIL import Image
+
+    from pdftransl.llm.fake import FakeLLMClient
+    from pdftransl.parsing.vlm_ocr_backend import VlmOcrBackend
+
+    img = tmp_path / "p.png"
+    Image.new("RGB", (30, 30)).save(img)
+
+    class Dirty(FakeLLMClient):
+        model = "deepseek-ai/DeepSeek-OCR"
+        supports_vision = True
+
+        def chat(self, *a, **k):
+            return "Распознанный текст.<|im_end|>"
+
+    out = VlmOcrBackend(PipelineConfig())._transcribe_page(Dirty(), img, 1)
+    assert out == "Распознанный текст."
+
+
+# ---- local vision-model unload (frees VRAM before translation) ------------
+
+def test_unload_local_vision_hits_ollama_endpoint(monkeypatch):
+    from pdftransl.config import ProviderConfig
+    from pdftransl.parsing.vlm_ocr_backend import VlmOcrBackend
+
+    class LocalClient:
+        model = "deepseek-ai/DeepSeek-OCR"
+        config = ProviderConfig(
+            name="deepseek_ocr", base_url="http://localhost:11434/v1",
+            model="deepseek-ai/DeepSeek-OCR", is_local=True,
+        )
+
+    captured = {}
+
+    def fake_post(url, json=None, timeout=None):
+        captured.update(url=url, json=json)
+        return object()
+
+    monkeypatch.setattr("requests.post", fake_post)
+    VlmOcrBackend(PipelineConfig(vision_unload_after_ocr=True))._unload_local_vision(
+        LocalClient()
+    )
+    assert captured["url"] == "http://localhost:11434/api/generate"
+    assert captured["json"] == {"model": "deepseek-ai/DeepSeek-OCR", "keep_alive": 0}
+
+
+def test_unload_skipped_for_cloud_and_when_disabled(monkeypatch):
+    from pdftransl.config import ProviderConfig
+    from pdftransl.parsing.vlm_ocr_backend import VlmOcrBackend
+
+    calls = []
+    monkeypatch.setattr("requests.post", lambda *a, **k: calls.append(1))
+
+    class CloudClient:
+        model = "gpt-4o"
+        config = ProviderConfig(name="openai", base_url="https://api.openai.com/v1",
+                                model="gpt-4o", is_local=False)
+
+    class LocalClient:
+        model = "qwen2.5-vl"
+        config = ProviderConfig(name="ollama", base_url="http://localhost:11434/v1",
+                                model="qwen2.5-vl", is_local=True)
+
+    # cloud -> never unload (nothing local to free)
+    VlmOcrBackend(PipelineConfig())._unload_local_vision(CloudClient())
+    # local but flag off -> skip
+    VlmOcrBackend(PipelineConfig(vision_unload_after_ocr=False))._unload_local_vision(
+        LocalClient()
+    )
+    assert not calls
+
+
 # ---- pipeline memory guard integration -----------------------------------
 
 def test_pipeline_records_low_memory(tmp_path, monkeypatch):

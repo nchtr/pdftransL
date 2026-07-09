@@ -32,7 +32,7 @@
 | `marker_backend.py` | marker — быстрый парсер с поддержкой LaTeX-формул. |
 | `docling_backend.py` | Docling (IBM) — силён на таблицах. |
 | `grobid_backend.py` | GROBID через HTTP-сервер: TEI → Markdown, точная структура/библиография. |
-| `vlm_ocr_backend.py` | OCR vision-моделью: рендер страниц в PNG → транскрипция в Markdown+LaTeX. Понимает спец-OCR модели (DeepSeek-OCR и др. — терсовый grounding-промпт). |
+| `vlm_ocr_backend.py` | OCR vision-моделью: рендер страниц в PNG → транскрипция в Markdown+LaTeX. Понимает спец-OCR модели (DeepSeek-OCR и др. — терсовый grounding-промпт), чистит утёкшие стоп-токены (`<|im_end|>`, `NoneNone`…), после OCR выгружает локальную модель из памяти (анти-OOM). |
 | `pymupdf_backend.py` | PyMuPDF — мгновенный фолбэк: голый текст без распознавания формул. |
 | `cache.py` | Кэш парсинга по SHA-256 содержимого PDF — повторная загрузка того же файла не парсится заново. |
 | `scan_detect.py` | Детектор «PDF-скан» (нет текстового слоя) и метрики по страницам — роутинг в OCR. |

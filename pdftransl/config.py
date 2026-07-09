@@ -261,6 +261,10 @@ class PipelineConfig:
     ocr_dpi: int = 200                  # page render resolution for OCR
     max_ocr_pages: int = 50             # cap VLM OCR calls per document
     ocr_prompt: Optional[str] = None    # override the per-page OCR instruction
+    # After a LOCAL vision model finishes OCR, ask the server (Ollama) to
+    # unload it (keep_alive=0) so its VRAM/RAM is free before the
+    # translation model loads — complements memory_guard against OOM.
+    vision_unload_after_ocr: bool = True
 
     # Output
     bilingual: bool = False             # alternate source/translation paragraphs
@@ -311,6 +315,7 @@ class PipelineConfig:
             ("PDFTRANSL_RENDER_CHECK", "render_check"),
             ("PDFTRANSL_STRUCTURED_OUTPUTS", "structured_outputs"),
             ("PDFTRANSL_OCR_ON_SCAN", "ocr_on_scan"),
+            ("PDFTRANSL_VISION_UNLOAD_AFTER_OCR", "vision_unload_after_ocr"),
             ("PDFTRANSL_PARSER_FALLBACK", "parser_fallback"),
             ("PDFTRANSL_ADAPTIVE_THROTTLE", "adaptive_throttle"),
             ("PDFTRANSL_RESUME", "resume"),
