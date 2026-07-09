@@ -261,6 +261,17 @@ class PipelineConfig:
     ocr_dpi: int = 200                  # page render resolution for OCR
     max_ocr_pages: int = 50             # cap VLM OCR calls per document
     ocr_prompt: Optional[str] = None    # override the per-page OCR instruction
+    # Per-page OCR request timeout (seconds) and retry count. Much tighter
+    # than the translation timeout: a page that doesn't answer in a few
+    # minutes is hung, and the default 300s×4-retries turned one stuck page
+    # into ~40 min of dead waiting. A slow-but-working local VLM still gets
+    # this full budget per attempt.
+    ocr_page_timeout: int = 180
+    ocr_page_retries: int = 1
+    # After a LOCAL vision model finishes OCR, ask the server (Ollama) to
+    # unload it (keep_alive=0) so its VRAM/RAM is free before the
+    # translation model loads — complements memory_guard against OOM.
+    vision_unload_after_ocr: bool = True
 
     # Output
     bilingual: bool = False             # alternate source/translation paragraphs
@@ -311,6 +322,7 @@ class PipelineConfig:
             ("PDFTRANSL_RENDER_CHECK", "render_check"),
             ("PDFTRANSL_STRUCTURED_OUTPUTS", "structured_outputs"),
             ("PDFTRANSL_OCR_ON_SCAN", "ocr_on_scan"),
+            ("PDFTRANSL_VISION_UNLOAD_AFTER_OCR", "vision_unload_after_ocr"),
             ("PDFTRANSL_PARSER_FALLBACK", "parser_fallback"),
             ("PDFTRANSL_ADAPTIVE_THROTTLE", "adaptive_throttle"),
             ("PDFTRANSL_RESUME", "resume"),
@@ -326,6 +338,8 @@ class PipelineConfig:
             kwargs["parser_timeout"] = int(env["PDFTRANSL_PARSER_TIMEOUT"])
         if env.get("PDFTRANSL_OCR_DPI"):
             kwargs["ocr_dpi"] = int(env["PDFTRANSL_OCR_DPI"])
+        if env.get("PDFTRANSL_OCR_PAGE_TIMEOUT"):
+            kwargs["ocr_page_timeout"] = int(env["PDFTRANSL_OCR_PAGE_TIMEOUT"])
         if env.get("PDFTRANSL_MIN_FREE_MEMORY_MB"):
             kwargs["min_free_memory_mb"] = int(env["PDFTRANSL_MIN_FREE_MEMORY_MB"])
         if env.get("PDFTRANSL_OCR_PROMPT"):
