@@ -255,6 +255,102 @@ def test_unload_skipped_for_cloud_and_when_disabled(monkeypatch):
     assert not calls
 
 
+# ---- OCR on multi-page docs: progress, incremental save, fail-fast --------
+
+def _make_pdf(path, pages=5):
+    fitz = pytest.importorskip("fitz")
+    doc = fitz.open()
+    for i in range(pages):
+        pg = doc.new_page()
+        pg.insert_text((72, 72), f"Page {i + 1} about neural networks.")
+    doc.save(str(path))
+    doc.close()
+
+
+def test_ocr_reports_per_page_progress(tmp_path):
+    from pdftransl.llm.fake import FakeLLMClient
+    from pdftransl.parsing.vlm_ocr_backend import VlmOcrBackend
+
+    pdf = tmp_path / "d.pdf"
+    _make_pdf(pdf, pages=5)
+
+    class VClient(FakeLLMClient):
+        model = "qwen2.5-vl"
+        supports_vision = True
+
+        def chat(self, *a, **k):
+            return "распознанный текст"
+
+    backend = VlmOcrBackend(PipelineConfig(ocr_dpi=100), client=VClient())
+    seen = []
+    backend.on_page_progress = lambda done, total: seen.append((done, total))
+    backend.parse(pdf, tmp_path / "wd")
+    assert seen == [(1, 5), (2, 5), (3, 5), (4, 5), (5, 5)]
+
+
+def test_ocr_writes_incrementally(tmp_path):
+    from pdftransl.llm.fake import FakeLLMClient
+    from pdftransl.parsing.vlm_ocr_backend import VlmOcrBackend
+
+    pdf = tmp_path / "d.pdf"
+    _make_pdf(pdf, pages=3)
+    md_path = tmp_path / "wd" / "d.md"
+
+    class VClient(FakeLLMClient):
+        model = "qwen2.5-vl"
+        supports_vision = True
+        seen_pages = 0
+
+        def chat(self, *a, **k):
+            # after the first page's chat, the partial md must already exist
+            VClient.seen_pages += 1
+            if VClient.seen_pages >= 2:
+                assert md_path.exists(), "partial markdown should be on disk mid-run"
+            return f"страница {VClient.seen_pages}"
+
+    VlmOcrBackend(PipelineConfig(ocr_dpi=100), client=VClient()).parse(pdf, tmp_path / "wd")
+    assert md_path.exists()
+
+
+def test_ocr_client_budget_clamps_and_restores():
+    from pdftransl.config import ProviderConfig
+    from pdftransl.parsing.vlm_ocr_backend import _ocr_client_budget
+
+    class Client:
+        config = ProviderConfig(name="ollama", base_url="http://localhost:11434/v1",
+                                model="qwen2.5-vl", is_local=True,
+                                timeout=300.0, max_retries=3)
+
+    c = Client()
+    cfg = PipelineConfig(ocr_page_timeout=90, ocr_page_retries=1)
+    with _ocr_client_budget(c, cfg):
+        assert c.config.timeout == 90.0
+        assert c.config.max_retries == 1
+    assert c.config.timeout == 300.0        # restored
+    assert c.config.max_retries == 3
+
+
+def test_ocr_client_budget_never_lengthens_timeout():
+    from pdftransl.config import ProviderConfig
+    from pdftransl.parsing.vlm_ocr_backend import _ocr_client_budget
+
+    class Client:
+        config = ProviderConfig(name="x", base_url="u", model="m",
+                                timeout=60.0, max_retries=3)
+
+    c = Client()
+    with _ocr_client_budget(c, PipelineConfig(ocr_page_timeout=180)):
+        assert c.config.timeout == 60.0     # min() — не удлиняем
+
+
+def test_ocr_client_budget_noop_without_config():
+    from pdftransl.llm.fake import FakeLLMClient
+    from pdftransl.parsing.vlm_ocr_backend import _ocr_client_budget
+
+    with _ocr_client_budget(FakeLLMClient(), PipelineConfig()):
+        pass  # must not raise
+
+
 # ---- pipeline memory guard integration -----------------------------------
 
 def test_pipeline_records_low_memory(tmp_path, monkeypatch):

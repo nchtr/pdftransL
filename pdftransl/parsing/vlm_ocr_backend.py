@@ -17,8 +17,9 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from pdftransl.config import PipelineConfig
 from pdftransl.exceptions import ParserError, ParserUnavailableError
@@ -85,6 +86,10 @@ class VlmOcrBackend(ParserBackend):
     def __init__(self, config: PipelineConfig, client: Optional[BaseLLMClient] = None):
         self.config = config
         self._client = client
+        # Пайплайн выставляет колбэк, чтобы бар двигался постранично
+        # (page_done, page_total) — иначе прогресс «висит» на OCR долгого
+        # документа, опираясь лишь на грубый таймер по времени.
+        self.on_page_progress: Optional[Callable[[int, int], None]] = None
 
     def _get_client(self) -> BaseLLMClient:
         if self._client is None:
@@ -107,24 +112,27 @@ class VlmOcrBackend(ParserBackend):
         ]
 
     def _transcribe_page(self, client: BaseLLMClient, img_path, page_no: int) -> str:
-        """One page → Markdown; one retry, then a visible placeholder.
+        """One page → Markdown, then a visible placeholder on failure.
 
-        Температура жёстко 0.0: любая «креативность» заставляет локальные
-        VLM выдумывать таблицы и ячейки (тот самый ``NoneNone``). Ответ
-        прогоняется через ``clean_ocr_artifacts`` — чистит утёкшие
-        стоп-токены квантованных моделей.
+        Один внешний вызов: клиент сам ретраит внутри (с бэкоффом), а
+        внешний цикл лишь множил время ожидания зависшей страницы —
+        раньше 2 внешних × 4 внутренних × 300с ≈ 40 минут на одну
+        застрявшую страницу. Температура жёстко 0.0: любая «креативность»
+        заставляет локальные VLM выдумывать таблицы (тот самый
+        ``NoneNone``). Ответ чистится ``clean_ocr_artifacts`` от утёкших
+        стоп-токенов квантованных моделей.
         """
         messages = self._build_messages(client, img_path)
-        last_exc = None
-        for attempt in range(2):
-            try:
-                return clean_ocr_artifacts(client.chat(messages, temperature=0.0))
-            except Exception as exc:  # noqa: BLE001 - keep OCR going per page
-                last_exc = exc
-                logger.warning("VLM OCR page %d attempt %d failed: %s",
-                               page_no, attempt + 1, exc)
-        logger.error("VLM OCR gave up on page %d: %s", page_no, last_exc)
-        return f"<!-- OCR failed for page {page_no}: {last_exc} -->"
+        started = time.monotonic()
+        try:
+            text = clean_ocr_artifacts(client.chat(messages, temperature=0.0))
+            logger.info("VLM OCR page %d done in %.0fs (%d chars)",
+                        page_no, time.monotonic() - started, len(text))
+            return text
+        except Exception as exc:  # noqa: BLE001 - одна страница не валит документ
+            logger.error("VLM OCR gave up on page %d after %.0fs: %s",
+                         page_no, time.monotonic() - started, exc)
+            return f"<!-- OCR failed for page {page_no}: {exc} -->"
 
     def _unload_local_vision(self, client: BaseLLMClient) -> None:
         """Выгрузить локальную vision-модель из памяти после OCR.
@@ -201,27 +209,46 @@ class VlmOcrBackend(ParserBackend):
         page_count = min(total_pages, self.config.max_ocr_pages)
         parts: list[str] = []
         assets: list[Asset] = []
+        md_path = workdir / f"{pdf_path.stem}.md"
 
-        try:
-            for page_no in range(page_count):
-                page = doc[page_no]
-                pixmap = page.get_pixmap(matrix=matrix)
-                img_path = pages_dir / f"page_{page_no + 1:03d}.png"
-                pixmap.save(str(img_path))
-                assets.append(Asset(path=str(img_path),
-                                    rel_path=f"pages/{img_path.name}",
-                                    kind="page", page=page_no + 1))
-                logger.info("VLM OCR: page %d/%d", page_no + 1, page_count)
-                text = self._transcribe_page(client, img_path, page_no + 1)
-                parts.append(_strip_fence(text.strip()))
-        finally:
-            doc.close()
-            # Освобождаем память локальной vision-модели до загрузки модели
-            # перевода — даже если OCR прервался на середине.
-            self._unload_local_vision(client)
+        # Жёсткий бюджет времени на страницу: подменяем таймаут/ретраи
+        # клиента на OCR-специфичные (короче, чем у перевода), чтобы
+        # зависшая страница отваливалась за минуты, а не за десятки минут.
+        # Восстанавливаем в finally — клиент может быть общим с описанием
+        # рисунков.
+        with _ocr_client_budget(client, self.config):
+            try:
+                for page_no in range(page_count):
+                    page = doc[page_no]
+                    pixmap = page.get_pixmap(matrix=matrix)
+                    img_path = pages_dir / f"page_{page_no + 1:03d}.png"
+                    pixmap.save(str(img_path))
+                    assets.append(Asset(path=str(img_path),
+                                        rel_path=f"pages/{img_path.name}",
+                                        kind="page", page=page_no + 1))
+                    logger.info("VLM OCR: page %d/%d", page_no + 1, page_count)
+                    text = self._transcribe_page(client, img_path, page_no + 1)
+                    parts.append(_strip_fence(text.strip()))
+                    # Инкрементальная запись: результат каждой страницы сразу
+                    # на диск — падение/зависание на середине не теряет уже
+                    # распознанное.
+                    try:
+                        md_path.write_text("\n\n".join(parts) + "\n", encoding="utf-8")
+                    except OSError as exc:
+                        logger.warning("VLM OCR: could not save partial page %d: %s",
+                                       page_no + 1, exc)
+                    if self.on_page_progress is not None:
+                        try:
+                            self.on_page_progress(page_no + 1, page_count)
+                        except Exception:  # прогресс не должен ронять OCR
+                            pass
+            finally:
+                doc.close()
+                # Освобождаем память локальной vision-модели до загрузки модели
+                # перевода — даже если OCR прервался на середине.
+                self._unload_local_vision(client)
 
         markdown = "\n\n".join(parts) + "\n"
-        md_path = workdir / f"{pdf_path.stem}.md"
         md_path.write_text(markdown, encoding="utf-8")
         meta = {"ocr": True, "pages_transcribed": page_count, "total_pages": total_pages}
         if page_count < total_pages:
@@ -247,3 +274,30 @@ def _strip_fence(text: str) -> str:
             body = body[nl + 1:]
         return body.strip()
     return text
+
+
+class _ocr_client_budget:
+    """На время OCR ужимает таймаут/ретраи клиента до OCR-специфичных.
+
+    Клиент (его ``config.timeout``/``max_retries``) может быть общим с
+    описанием рисунков, поэтому исходные значения сохраняются и
+    восстанавливаются на выходе. Клиенты без ``.config`` (Fake, кастомные)
+    просто не трогаются."""
+
+    def __init__(self, client: BaseLLMClient, config: PipelineConfig):
+        self._cfg = getattr(client, "config", None)
+        self._timeout = config.ocr_page_timeout
+        self._retries = config.ocr_page_retries
+        self._saved: Optional[tuple] = None
+
+    def __enter__(self):
+        if self._cfg is not None and hasattr(self._cfg, "timeout"):
+            self._saved = (self._cfg.timeout, self._cfg.max_retries)
+            # не удлиняем, только укорачиваем: min с текущим таймаутом
+            self._cfg.timeout = min(self._cfg.timeout, float(self._timeout))
+            self._cfg.max_retries = max(0, self._retries)
+        return self
+
+    def __exit__(self, *exc):
+        if self._cfg is not None and self._saved is not None:
+            self._cfg.timeout, self._cfg.max_retries = self._saved

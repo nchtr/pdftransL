@@ -342,11 +342,14 @@ class TranslationPipeline:
         # timeout, capped short of 100% so it never claims to be done before
         # it actually is. Purely cosmetic — never affects the real result.
         stop_ticker = threading.Event()
+        pause_ticker = threading.Event()  # OCR даёт настоящий постраничный %
 
         def _tick() -> None:
             started = time.monotonic()
             timeout = self.config.parser_timeout or 1800
             while not stop_ticker.wait(2.0):
+                if pause_ticker.is_set():
+                    continue  # у OCR есть реальный прогресс — не мешаем таймером
                 elapsed = time.monotonic() - started
                 tracker.enter("parse", min(0.92, elapsed / timeout))
 
@@ -354,6 +357,18 @@ class TranslationPipeline:
         if tracker is not None:
             ticker = threading.Thread(target=_tick, daemon=True, name="parse-ticker")
             ticker.start()
+
+        def _wire_ocr_progress(backend) -> None:
+            """VLM-OCR умеет отдавать настоящий постраничный прогресс —
+            подключаем его к стадии parse вместо грубого таймера."""
+            if tracker is None or not hasattr(backend, "on_page_progress"):
+                return
+            pause_ticker.set()
+
+            def _on_page(done: int, total: int) -> None:
+                tracker.enter("parse", done / max(total, 1))
+
+            backend.on_page_progress = _on_page
 
         # Лучший из «мусорных» результатов: если ни один бэкенд не дал
         # чистого текста (типично: битый PDF без vision-модели), честнее
@@ -371,6 +386,7 @@ class TranslationPipeline:
                         return self._annotate_parse(cached, scan, backend, primary)
                 logger.info("Parsing %s with backend '%s'%s", pdf_path.name, backend.name,
                             " (fallback)" if i else "")
+                _wire_ocr_progress(backend)
                 try:
                     parsed = backend.parse(pdf_path, workdir / backend.name)
 
