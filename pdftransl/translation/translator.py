@@ -24,7 +24,7 @@ from pdftransl.config import PipelineConfig
 from pdftransl.llm.base import BaseLLMClient
 from pdftransl.masking import Masker, unmask
 from pdftransl.models import Block, BlockType, QAIssue, Segment, new_id
-from pdftransl.quality.validators import validate_segment
+from pdftransl.quality.validators import residual_source_ratio, validate_segment
 from pdftransl.translation.prompts import (
     REPAIR_USER,
     build_translation_system,
@@ -294,6 +294,58 @@ class Translator:
             )
         segment.translation = restored
         segment.issues.extend(validate_segment(segment, self.config))
+
+    # -- residual re-translation ---------------------------------------
+    def retranslate_residual(self, segments: list[Segment]) -> int:
+        """Доперевести сегменты, которые валидатор всё ещё находит на
+        исходном языке (модель оставила целый кусок непереведённым).
+
+        Свежая попытка с усиленной инструкцией; принимаем результат
+        только если исходного языка стало меньше (иначе оставляем как
+        было — хуже не сделаем). Возвращает число реально исправленных."""
+        fixed = 0
+        for segment in segments:
+            if segment.kind != "translate" or not segment.translation:
+                continue
+            if not any(i.code == "untranslated" for i in segment.issues):
+                continue
+            before = residual_source_ratio(
+                segment.translation, self.config.source_lang, self.config.target_lang)
+            prev_translation = segment.translation
+            prev_issues = list(segment.issues)
+            try:
+                system = build_translation_system(
+                    self.config.source_lang, self.config.target_lang,
+                    doc_summary=self.doc_summary or None,
+                )
+                user = (
+                    "Предыдущий перевод оставил часть текста на исходном языке. "
+                    "Переведи АБСОЛЮТНО ВЕСЬ текст ниже на язык назначения, "
+                    "не оставляя ни одного слова на языке оригинала. Сохрани "
+                    "плейсхолдеры ⟦PH…⟧ и структуру.\n\n" + segment.masked_text
+                )
+                raw = self.client.chat(
+                    [{"role": "system", "content": system},
+                     {"role": "user", "content": user}],
+                    temperature=self.config.temperature,
+                    max_tokens=self.config.max_output_tokens,
+                )
+            except Exception as exc:
+                logger.warning("residual re-translation failed for %s: %s",
+                               segment.id, exc)
+                continue
+            self._finalize(segment, raw)
+            after = residual_source_ratio(
+                segment.translation, self.config.source_lang, self.config.target_lang)
+            # приняли, только если реально стало меньше исходного языка и
+            # не сломали плейсхолдеры
+            if after < before and segment.ok:
+                segment.attempts += 1
+                fixed += 1
+            else:
+                segment.translation = prev_translation
+                segment.issues = prev_issues
+        return fixed
 
     # -- whole document --------------------------------------------------
     def translate_segments(

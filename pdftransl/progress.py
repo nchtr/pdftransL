@@ -29,8 +29,10 @@ _STAGES: dict[str, tuple[str, float]] = {
     "assemble": ("Сборка документа", 1.0),
     "scoring": ("Оценка качества (LLM-судья)", 4.0),
     "review": ("Ревью LLM", 8.0),
+    "retranslate": ("Доперевод остатков", 4.0),
     "backtranslation": ("Проверка обратным переводом", 6.0),
     "latex_fix": ("Починка формул", 3.0),
+    "layout_fix": ("Починка вёрстки", 6.0),
     "figures": ("Описание рисунков", 4.0),
     "export": ("Экспорт форматов", 10.0),
     "render_check": ("Проверка рендера", 2.0),
@@ -40,8 +42,8 @@ _STAGES: dict[str, tuple[str, float]] = {
 # Fixed pipeline order; build_stage_plan filters out disabled ones.
 _ORDER = [
     "parse", "split", "context", "translate", "assemble", "scoring",
-    "review", "backtranslation", "latex_fix", "figures", "export",
-    "render_check", "learn",
+    "review", "retranslate", "backtranslation", "latex_fix", "layout_fix",
+    "figures", "export", "render_check", "learn",
 ]
 
 
@@ -65,8 +67,10 @@ def build_stage_plan(config: "PipelineConfig") -> list[StagePlanEntry]:
         "context": config.doc_summary or config.auto_glossary,
         "scoring": config.quality_score,
         "review": config.review,
+        "retranslate": config.retranslate_residual,
         "backtranslation": config.backtranslation_check,
         "latex_fix": config.fix_latex,
+        "layout_fix": config.fix_layout,
         "figures": config.describe_figures,
         "export": bool(config.export_formats),
         "render_check": config.render_check and bool(config.export_formats),
