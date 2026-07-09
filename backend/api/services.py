@@ -35,7 +35,10 @@ _BOOL_KEYS = (
     "structured_outputs", "ocr_on_scan", "parser_fallback",
     "adaptive_throttle", "parse_cache", "resume",
 )
-_BOOL_KEYS = _BOOL_KEYS + ("memory_guard",)
+_BOOL_KEYS = _BOOL_KEYS + (
+    "memory_guard", "retranslate_residual", "fix_layout",
+    "vision_unload_after_ocr",
+)
 _STR_KEYS = (
     "provider", "model", "vision_provider", "vision_model",
     "parser_backend", "domain", "source_lang", "target_lang",

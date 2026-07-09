@@ -645,6 +645,21 @@ class TranslationPipeline:
                 )
                 stage_errors["review"] = str(exc)
 
+        # 5b. re-translate whole chunks the model left in the source
+        # language (validators flag them "untranslated").
+        retranslated_count = 0
+        if cfg.retranslate_residual:
+            stage("retranslate", 0.0)
+            try:
+                retranslated_count = self.translator.retranslate_residual(segments)
+                if retranslated_count:
+                    logger.info("[%s] re-translated %d residual-source segment(s)",
+                                job_id, retranslated_count)
+            except Exception as exc:
+                logger.warning("[%s] residual re-translation failed, skipping: %s",
+                                job_id, exc)
+                stage_errors["retranslate"] = str(exc)
+
         # 6. optional back-translation semantic check
         if cfg.backtranslation_check:
             stage("backtranslation", 0.0)
@@ -671,6 +686,25 @@ class TranslationPipeline:
                 logger.warning("[%s] LaTeX repair failed, keeping unfixed formulas: %s",
                                 job_id, exc)
                 stage_errors["latex_fix"] = str(exc)
+
+        # 7b. optional LLM repair of parser layout artifacts (mid-sentence
+        # splits, wrong heading levels, reordered blocks). Content-guarded:
+        # a chunk is only replaced if text/formula count survives.
+        layout_fixes = 0
+        if cfg.fix_layout:
+            stage("layout_fix", 0.0)
+            try:
+                from pdftransl.quality.document_repair import repair_layout
+
+                translated_md, layout_fixes = repair_layout(
+                    translated_md, self.client, cfg)
+                if layout_fixes:
+                    logger.info("[%s] layout repair fixed %d chunk(s)",
+                                job_id, layout_fixes)
+            except Exception as exc:
+                logger.warning("[%s] layout repair failed, keeping original: %s",
+                                job_id, exc)
+                stage_errors["layout_fix"] = str(exc)
 
         output_path.write_text(translated_md, encoding="utf-8")
         bilingual_path: Optional[Path] = None
@@ -813,6 +847,10 @@ class TranslationPipeline:
             report["figures_described"] = len(figure_descriptions)
         if latex_fixes:
             report["latex_fixes"] = latex_fixes
+        if retranslated_count:
+            report["retranslated_segments"] = retranslated_count
+        if layout_fixes:
+            report["layout_fixes"] = layout_fixes
         if quality_scores:
             report["quality_scores"] = quality_scores
         if render_issues:

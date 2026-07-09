@@ -16,6 +16,18 @@ from dataclasses import dataclass, field
 PLACEHOLDER_FMT = "⟦PH{}⟧"
 PLACEHOLDER_RE = re.compile(r"⟦PH(\d+)⟧")
 
+# Толерантный матчер плейсхолдера, который модель могла покорёжить:
+# другие скобки ([ 【 〚 «), лишние пробелы, регистр, кириллические
+# гомоглифы Р/Н вместо P/H, удвоенные скобки. Захватывает номер. Скобки
+# обязательны с ОБЕИХ сторон — иначе «pH 12» из химии дало бы ложное
+# срабатывание. Это восстанавливает искажённые токены, из-за которых
+# сыпались постоянные варнинги «placeholders lost».
+_FUZZY_PH_RE = re.compile(
+    r"[⟦\[【〚〔｢«‹<]{1,2}\s*"
+    r"[PpРр]\s*[HhНн]\s*(\d+)\s*"
+    r"[⟧\]】〛〕｣»›>]{1,2}"
+)
+
 # Порядок важен: крупные конструкции маскируются раньше своих частей
 # (код-блок раньше инлайн-кода, $$...$$ раньше $...$ и т.д.).
 _MASK_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
@@ -85,27 +97,60 @@ def unmask(text: str, mapping: dict[str, str]) -> tuple[str, list[str], list[str
     inner token only appears *after* the outer one is expanded — a single
     pass would leave it in the output as literal ``⟦PHn⟧`` junk and
     misreport it as both missing and unknown.
+
+    After the exact pass, a *tolerant* pass recovers tokens the model
+    lightly mangled (``⟦ PH 12 ⟧``, ``[PH12]``, ``⟦РН12⟧``…). Small local
+    models corrupt the fancy ``⟦⟧`` brackets constantly, which used to
+    flood the QA report with false "placeholder lost" errors and trigger
+    pointless repair loops.
     """
     restored = text
     seen: set[str] = set()
-    # each pass can reveal at most one more nesting level; +1 for safety
-    for _ in range(len(mapping) + 1):
+
+    def _sub_exact() -> bool:
+        nonlocal restored
         replaced_any = False
         for token, original in mapping.items():
             if token in restored:
                 restored = restored.replace(token, original)
                 seen.add(token)
                 replaced_any = True
-        if not replaced_any:
+        return replaced_any
+
+    def _sub_fuzzy() -> bool:
+        """Replace mangled placeholder tokens by their number. Unrecoverable
+        matches (number not in the mapping) are left untouched for the
+        'unknown' report."""
+        nonlocal restored
+        changed = False
+
+        def repl(m: "re.Match[str]") -> str:
+            nonlocal changed
+            token = PLACEHOLDER_FMT.format(m.group(1))
+            original = mapping.get(token)
+            if original is None:
+                return m.group(0)  # hallucinated / stray — leave as-is
+            seen.add(token)
+            changed = True
+            return original
+
+        restored = _FUZZY_PH_RE.sub(repl, restored)
+        return changed
+
+    # each pass can reveal at most one more nesting level; +1 for safety
+    for _ in range(len(mapping) + 2):
+        if not (_sub_exact() or _sub_fuzzy()):
             break
+
     missing = [t for t in mapping if t not in seen]
-    unknown = [
-        m.group(0)
-        for m in PLACEHOLDER_RE.finditer(restored)
-        if m.group(0) not in mapping
-        # in-mapping tokens can't survive the fixpoint loop above, so
-        # whatever placeholder-shaped text remains was hallucinated
-    ]
+    # leftover placeholder-shaped text the model invented (a real token
+    # can't survive the loop above); match tolerantly so a mangled but
+    # unknown token is still reported once.
+    unknown: list[str] = []
+    for m in _FUZZY_PH_RE.finditer(restored):
+        token = PLACEHOLDER_FMT.format(m.group(1))
+        if token not in mapping:
+            unknown.append(m.group(0))
     return restored, missing, unknown
 
 

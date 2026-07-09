@@ -53,6 +53,7 @@ def test_stage_plan_excludes_disabled_stages():
         review=False, backtranslation_check=False, quality_score=False,
         describe_figures=False, render_check=False, fix_latex=False,
         doc_summary=False, auto_glossary=False, learn=False, export_formats=[],
+        retranslate_residual=False, fix_layout=False,
     )
     keys = {s.key for s in build_stage_plan(cfg)}
     assert keys == {"parse", "split", "translate", "assemble"}

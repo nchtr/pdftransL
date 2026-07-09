@@ -230,6 +230,15 @@ class PipelineConfig:
     fix_latex: bool = True               # LLM-repair broken formulas in the result
     max_latex_fixes: int = 10
     render_check: bool = False           # render exported HTML, count KaTeX errors
+    # Re-translate segments the validators still find in the source
+    # language (a whole chunk the model left untranslated). Cheap safety
+    # net; on by default.
+    retranslate_residual: bool = True
+    # LLM repair of parser layout artifacts in the assembled result
+    # (mid-sentence splits, wrong heading levels, misordered blocks).
+    # Off by default — an extra full-document LLM pass, and content-safe
+    # but not free.
+    fix_layout: bool = False
 
     # Provider behaviour
     structured_outputs: bool = False     # ask for JSON mode where the task is JSON
@@ -323,6 +332,8 @@ class PipelineConfig:
             ("PDFTRANSL_STRUCTURED_OUTPUTS", "structured_outputs"),
             ("PDFTRANSL_OCR_ON_SCAN", "ocr_on_scan"),
             ("PDFTRANSL_VISION_UNLOAD_AFTER_OCR", "vision_unload_after_ocr"),
+            ("PDFTRANSL_RETRANSLATE_RESIDUAL", "retranslate_residual"),
+            ("PDFTRANSL_FIX_LAYOUT", "fix_layout"),
             ("PDFTRANSL_PARSER_FALLBACK", "parser_fallback"),
             ("PDFTRANSL_ADAPTIVE_THROTTLE", "adaptive_throttle"),
             ("PDFTRANSL_RESUME", "resume"),

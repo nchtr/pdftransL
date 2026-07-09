@@ -43,6 +43,19 @@ def _script_word_ratio(text: str, script: str) -> float:
     return hits / len(words)
 
 
+def residual_source_ratio(text: str, source_lang: str, target_lang: str) -> float:
+    """Доля слов текста, оставшихся в письменности исходного языка.
+
+    0.0, если письменности исходного и целевого языков не различимы
+    (например латиница→латиница) — тогда «остаток исходного» не
+    определить. Используется валидатором и стадией допере­вода."""
+    src_script = _LANG_SCRIPT.get(source_lang)
+    tgt_script = _LANG_SCRIPT.get(target_lang)
+    if not src_script or not tgt_script or src_script == tgt_script:
+        return 0.0
+    return _script_word_ratio(strip_placeholders(text), src_script)
+
+
 def validate_segment(segment: "Segment", config: "PipelineConfig") -> list[QAIssue]:
     """Validate a translated segment against its source. Placeholder
     integrity is checked separately during unmasking."""
