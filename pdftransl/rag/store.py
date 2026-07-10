@@ -5,6 +5,12 @@
 приоритетнее авто), похожие сегменты как few-shot примеры (косинус,
 numpy fast-path, доменный фильтр). SQLite в одном файле; за тем же
 интерфейсом легко поставить pgvector/Qdrant.
+
+Оптимизация v0.18: ``search()`` больше не перечитывает всю таблицу и
+не перепарсивает JSON эмбеддингов на КАЖДЫЙ сегмент — векторы одной
+языковой пары грузятся один раз в снимок (c кэшированной numpy-матрицей),
+который инвалидируется записью в TM и по TTL. На документе в сотни
+сегментов с многотысячной памятью это убирает сотни полных сканов базы.
 """
 
 from __future__ import annotations
@@ -72,12 +78,59 @@ def _batch_cosine(query: list[float], vectors: list[list[float]]) -> list[float]
         return [cosine(query, v) for v in vectors]
 
 
+class _Snapshot:
+    """Снимок сегментов одной языковой пары для косинусного поиска.
+
+    Грузится из SQLite один раз (строки + распарсенные векторы); numpy-
+    матрица с предвычисленными нормами строится лениво при первом
+    запросе и переиспользуется всеми последующими — на каждый сегмент
+    остаётся один matvec вместо полного скана таблицы.
+    """
+
+    def __init__(self, rows: list[dict], vectors: list[list[float]]):
+        self.rows = rows
+        self.vectors = vectors
+        self.loaded_at = time.monotonic()
+        self._matrix = None      # (np.ndarray, норм-вектор) | None
+        self._matrix_dim = -1
+
+    def similarities(self, query_vec: list[float]) -> list[float]:
+        if not self.vectors:
+            return []
+        try:
+            import numpy as np
+        except ImportError:
+            return [cosine(query_vec, v) for v in self.vectors]
+        dim = len(query_vec)
+        if self._matrix is None or self._matrix_dim != dim:
+            matrix = np.array(
+                [v if len(v) == dim else [0.0] * dim for v in self.vectors],
+                dtype=np.float32,
+            )
+            norms = np.linalg.norm(matrix, axis=1)
+            norms[norms == 0] = 1.0
+            self._matrix = (matrix, norms)
+            self._matrix_dim = dim
+        matrix, norms = self._matrix
+        q = np.array(query_vec, dtype=np.float32)
+        q_norm = np.linalg.norm(q) or 1.0
+        return (matrix @ q / (norms * q_norm)).tolist()
+
+
+# Снимок устаревает сам по себе: другой процесс (бот рядом с веб-бэком)
+# мог дописать в базу — перечитываем не чаще, чем раз в TTL.
+_SNAPSHOT_TTL = 300.0
+
+
 class TranslationMemory:
     def __init__(self, db_path: str | Path, embedder: BaseEmbedder):
         self.db_path = str(db_path)
         Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
         self.embedder = embedder
         self._lock = threading.Lock()
+        # кэш снимков для search(): (src, tgt, embedder) -> _Snapshot
+        self._snap_lock = threading.Lock()
+        self._snapshots: dict[tuple, _Snapshot] = {}
         with self._connect() as conn:
             conn.executescript(_SCHEMA)
             # migrate pre-domain databases
@@ -127,6 +180,9 @@ class TranslationMemory:
                     json.dumps(vector), self.embedder.name, time.time(),
                 ),
             )
+        # память изменилась — снимки поиска устарели
+        with self._snap_lock:
+            self._snapshots.clear()
 
     # -- reading (retrieval) -------------------------------------------
     def exact_match(
@@ -139,6 +195,40 @@ class TranslationMemory:
                 (_hash(source.strip()), src_lang, tgt_lang),
             ).fetchone()
         return row["target"] if row else None
+
+    def _snapshot(self, src_lang: str, tgt_lang: str) -> _Snapshot:
+        """Снимок сегментов языковой пары (кэш; см. докстринг модуля)."""
+        key = (src_lang, tgt_lang, self.embedder.name)
+        with self._snap_lock:
+            snap = self._snapshots.get(key)
+            if snap is not None and time.monotonic() - snap.loaded_at < _SNAPSHOT_TTL:
+                return snap
+        # грузим вне снап-лока (долго), защищаясь от гонки двойной загрузкой:
+        # худший случай — два потока прочитают базу параллельно, победит одна
+        with self._connect() as conn:
+            db_rows = conn.execute(
+                "SELECT source, target, origin, domain, embedding "
+                "FROM tm_segments WHERE src_lang=? AND tgt_lang=? AND embedder=?",
+                (src_lang, tgt_lang, self.embedder.name),
+            ).fetchall()
+        rows: list[dict] = []
+        vectors: list[list[float]] = []
+        for row in db_rows:
+            try:
+                vector = json.loads(row["embedding"]) if row["embedding"] else []
+            except ValueError:
+                vector = []  # битая запись не должна ломать весь поиск
+            rows.append({
+                "source": row["source"],
+                "target": row["target"],
+                "origin": row["origin"],
+                "domain": row["domain"],
+            })
+            vectors.append(vector)
+        snap = _Snapshot(rows, vectors)
+        with self._snap_lock:
+            self._snapshots[key] = snap
+        return snap
 
     def search(
         self,
@@ -153,23 +243,12 @@ class TranslationMemory:
         and the same embedder (vectors from different embedders are
         incomparable). ``domain`` restricts to one subject area."""
         query_vec = self.embedder.embed([query])[0]
-        sql = (
-            "SELECT source, target, origin, embedding FROM tm_segments "
-            "WHERE src_lang=? AND tgt_lang=? AND embedder=?"
-        )
-        params: list = [src_lang, tgt_lang, self.embedder.name]
-        if domain:
-            sql += " AND domain IN ('', ?)"
-            params.append(domain)
-        with self._connect() as conn:
-            rows = conn.execute(sql, params).fetchall()
-        vectors = [
-            json.loads(row["embedding"]) if row["embedding"] else []
-            for row in rows
-        ]
-        similarities = _batch_cosine(query_vec, vectors)
+        snap = self._snapshot(src_lang, tgt_lang)
+        similarities = snap.similarities(query_vec)
         scored = []
-        for row, sim in zip(rows, similarities):
+        for row, sim in zip(snap.rows, similarities):
+            if domain and row["domain"] not in ("", domain):
+                continue
             if sim >= min_similarity:
                 scored.append({
                     "source": row["source"],
