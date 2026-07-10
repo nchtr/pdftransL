@@ -1,12 +1,15 @@
 """Нативный клиент Anthropic Messages API.
 
 Отличия от OpenAI-формата: system отдельным полем, свой формат
-картинок — конвертация происходит здесь.
+картинок — конвертация происходит здесь. С v0.18 — keep-alive-сессия,
+раздельный connect/read-таймаут, джиттер в бэкоффе и ретрай битых
+ответов (та же обвязка стабильности, что и у OpenAI-клиента).
 """
 
 from __future__ import annotations
 
 import logging
+import random
 import time
 from typing import Any, Optional
 
@@ -15,10 +18,11 @@ import requests
 from pdftransl.config import ProviderConfig
 from pdftransl.exceptions import LLMError
 from pdftransl.llm.base import BaseLLMClient, Message
+from pdftransl.llm.openai_compat import _CONNECT_TIMEOUT, _make_session
 
 logger = logging.getLogger(__name__)
 
-_RETRIABLE = {429, 500, 502, 503, 529}
+_RETRIABLE = {408, 429, 500, 502, 503, 504, 529}
 _API_VERSION = "2023-06-01"
 _DEFAULT_MAX_TOKENS = 8192
 
@@ -60,6 +64,7 @@ class AnthropicClient(BaseLLMClient):
             "anthropic-version": _API_VERSION,
         }
         self._headers.update(config.extra_headers)
+        self._session = _make_session()
 
     def chat(
         self,
@@ -90,18 +95,24 @@ class AnthropicClient(BaseLLMClient):
         last_error: Optional[str] = None
         for attempt in range(self.config.max_retries + 1):
             if attempt:
-                delay = min(2 ** attempt, 30)
-                logger.warning("Anthropic retry %d in %ds (%s)", attempt, delay, last_error)
+                delay = min(2.0 ** attempt, 30.0)
+                # Retry-After от предыдущего 429/529 — уважаем подсказку
+                if last_error and last_error.startswith("HTTP 429") and self._retry_after:
+                    delay = max(delay, min(self._retry_after, 60.0))
+                delay *= 0.75 + random.random() * 0.5  # джиттер против шторма
+                logger.warning("Anthropic retry %d in %.1fs (%s)", attempt, delay, last_error)
                 time.sleep(delay)
+            read_timeout = self.config.timeout
             try:
-                resp = requests.post(
+                resp = self._session.post(
                     url, json=payload, headers=self._headers,
-                    timeout=self.config.timeout,
+                    timeout=(min(_CONNECT_TIMEOUT, read_timeout), read_timeout),
                 )
             except requests.RequestException as exc:
                 last_error = f"network error: {exc}"
                 continue
             if resp.status_code in _RETRIABLE:
+                self._retry_after = _header_retry_after(resp)
                 last_error = f"HTTP {resp.status_code}: {resp.text[:300]}"
                 continue
             if resp.status_code != 200:
@@ -109,7 +120,23 @@ class AnthropicClient(BaseLLMClient):
             try:
                 data = resp.json()
                 parts = [b["text"] for b in data["content"] if b.get("type") == "text"]
-                return "".join(parts)
-            except (KeyError, ValueError) as exc:
-                raise LLMError(f"anthropic: malformed response: {resp.text[:500]}") from exc
+                text = "".join(parts)
+            except (KeyError, TypeError, ValueError):
+                # обрезанный/битый JSON перегруженного сервера — ретраябельно
+                last_error = f"malformed response: {resp.text[:300]}"
+                continue
+            if not text.strip():
+                last_error = "empty completion"
+                continue
+            return text
         raise LLMError(f"anthropic: retries exhausted ({last_error})")
+
+    _retry_after: Optional[float] = None
+
+
+def _header_retry_after(resp: requests.Response) -> Optional[float]:
+    value = resp.headers.get("retry-after") or resp.headers.get("Retry-After")
+    try:
+        return float(value) if value else None
+    except ValueError:
+        return None

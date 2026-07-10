@@ -84,7 +84,9 @@ def test_client_trips_gate_on_429(monkeypatch):
         Resp(429, headers={"Retry-After": "7"}),
         Resp(200, body={"choices": [{"message": {"content": "ok"}}]}),
     ]
-    monkeypatch.setattr(openai_compat.requests, "post",
+    # клиент ходит через requests.Session (keep-alive пул) — патчим метод
+    # класса Session, а не модульный requests.post
+    monkeypatch.setattr(openai_compat.requests.Session, "post",
                         lambda *a, **k: responses.pop(0))
     monkeypatch.setattr(openai_compat.time, "sleep", lambda s: None)
 
