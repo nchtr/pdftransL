@@ -234,6 +234,11 @@ class PipelineConfig:
     # language (a whole chunk the model left untranslated). Cheap safety
     # net; on by default.
     retranslate_residual: bool = True
+    # When the repair loop keeps losing placeholder tokens, try once to
+    # translate the segment WITHOUT masking (formulas/links sent as-is,
+    # accepted only if every protected fragment survives verbatim).
+    # Rescues segments that would otherwise ship untranslated.
+    unmasked_rescue: bool = True
     # LLM repair of parser layout artifacts in the assembled result
     # (mid-sentence splits, wrong heading levels, misordered blocks).
     # Off by default — an extra full-document LLM pass, and content-safe
@@ -333,6 +338,7 @@ class PipelineConfig:
             ("PDFTRANSL_OCR_ON_SCAN", "ocr_on_scan"),
             ("PDFTRANSL_VISION_UNLOAD_AFTER_OCR", "vision_unload_after_ocr"),
             ("PDFTRANSL_RETRANSLATE_RESIDUAL", "retranslate_residual"),
+            ("PDFTRANSL_UNMASKED_RESCUE", "unmasked_rescue"),
             ("PDFTRANSL_FIX_LAYOUT", "fix_layout"),
             ("PDFTRANSL_PARSER_FALLBACK", "parser_fallback"),
             ("PDFTRANSL_ADAPTIVE_THROTTLE", "adaptive_throttle"),

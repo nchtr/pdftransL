@@ -23,10 +23,18 @@ logger = logging.getLogger(__name__)
 class MineruLocalBackend(ParserBackend):
     name = "mineru_local"
 
+    # Битая установка (CLI есть, а зависимостей нет — классика: `pip
+    # install mineru` без extras не ставит torch) детектируется при первом
+    # запуске и запоминается на весь процесс: без этого КАЖДАЯ задача
+    # платила ~20 секунд за заведомый провал, прежде чем уйти в фолбэк.
+    _broken_reason: str | None = None
+
     def __init__(self, config: PipelineConfig | None = None):
         self.config = config
 
     def available(self) -> bool:
+        if MineruLocalBackend._broken_reason:
+            return False
         return mineru_cli_available()
 
     def parse(self, pdf_path: str | Path, workdir: str | Path) -> ParsedDocument:
@@ -59,6 +67,19 @@ class MineruLocalBackend(ParserBackend):
             ) from exc
         except subprocess.CalledProcessError as exc:
             tail = (exc.stderr or "")[-1500:]
+            # Ошибка импорта = сломанная установка, а не проблема этого
+            # PDF: помечаем бэкенд нерабочим до конца процесса и даём
+            # рецепт починки вместо голого трейсбека.
+            if "ModuleNotFoundError" in tail or "No module named" in tail:
+                MineruLocalBackend._broken_reason = tail.strip().splitlines()[-1][:200]
+                hint = (
+                    "MinerU is installed without its ML dependencies "
+                    f"({MineruLocalBackend._broken_reason}). Reinstall with: "
+                    "pip install 'mineru[core]' — skipping MinerU for the "
+                    "rest of this run."
+                )
+                logger.error(hint)
+                raise ParserError(hint) from exc
             raise ParserError(
                 f"MinerU failed (exit {exc.returncode}): {tail or exc}"
             ) from exc

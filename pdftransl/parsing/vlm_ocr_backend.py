@@ -26,6 +26,7 @@ from pdftransl.exceptions import ParserError, ParserUnavailableError
 from pdftransl.llm.base import BaseLLMClient, vision_message
 from pdftransl.models import Asset, ParsedDocument
 from pdftransl.parsing.base import ParserBackend
+from pdftransl.parsing.html_tables import convert_html_tables
 
 logger = logging.getLogger(__name__)
 
@@ -120,12 +121,14 @@ class VlmOcrBackend(ParserBackend):
         застрявшую страницу. Температура жёстко 0.0: любая «креативность»
         заставляет локальные VLM выдумывать таблицы (тот самый
         ``NoneNone``). Ответ чистится ``clean_ocr_artifacts`` от утёкших
-        стоп-токенов квантованных моделей.
+        стоп-токенов квантованных моделей, а HTML-таблицы конвертируются
+        в Markdown (иначе они уходят в перевод сырыми тегами).
         """
         messages = self._build_messages(client, img_path)
         started = time.monotonic()
         try:
             text = clean_ocr_artifacts(client.chat(messages, temperature=0.0))
+            text = convert_html_tables(text)
             logger.info("VLM OCR page %d done in %.0fs (%d chars)",
                         page_no, time.monotonic() - started, len(text))
             return text
@@ -133,6 +136,24 @@ class VlmOcrBackend(ParserBackend):
             logger.error("VLM OCR gave up on page %d after %.0fs: %s",
                          page_no, time.monotonic() - started, exc)
             return f"<!-- OCR failed for page {page_no}: {exc} -->"
+
+    @staticmethod
+    def _page_text_layer(page) -> str:
+        """Текстовый слой страницы, если он есть и не кракозябры.
+
+        Запасной источник для страницы, на которой OCR-модель вернула
+        пустоту (DeepSeek-OCR так «пропускает» вполне нормальные
+        страницы): молча терять страницу нельзя, а извлечённый текст
+        хуже OCR только на сканах — там его просто нет."""
+        from pdftransl.parsing.text_quality import is_garbled
+
+        try:
+            text = page.get_text("text").strip()
+        except Exception:  # noqa: BLE001 - битые страницы не роняют OCR
+            return ""
+        if len(text) < 40 or is_garbled(text):
+            return ""
+        return text
 
     def _unload_local_vision(self, client: BaseLLMClient) -> None:
         """Выгрузить локальную vision-модель из памяти после OCR.
@@ -216,6 +237,8 @@ class VlmOcrBackend(ParserBackend):
         # зависшая страница отваливалась за минуты, а не за десятки минут.
         # Восстанавливаем в finally — клиент может быть общим с описанием
         # рисунков.
+        pages_rescued: list[int] = []   # пустой OCR, но спас текстовый слой
+        pages_empty: list[int] = []     # страница потеряна совсем
         with _ocr_client_budget(client, self.config):
             try:
                 for page_no in range(page_count):
@@ -228,6 +251,32 @@ class VlmOcrBackend(ParserBackend):
                                         kind="page", page=page_no + 1))
                     logger.info("VLM OCR: page %d/%d", page_no + 1, page_count)
                     text = self._transcribe_page(client, img_path, page_no + 1)
+
+                    # Пустой ответ на непустой странице — известный сбой
+                    # локальных OCR-моделей (DeepSeek-OCR мгновенно отдаёт
+                    # «ничего» на нормальной странице). Раньше страница
+                    # молча исчезала из документа; теперь: один ретрай,
+                    # затем спасение текстовым слоем самой страницы.
+                    if not text.strip():
+                        logger.warning("VLM OCR: page %d came back empty; "
+                                       "retrying once", page_no + 1)
+                        text = self._transcribe_page(client, img_path, page_no + 1)
+                    if not text.strip():
+                        layer = self._page_text_layer(page)
+                        if layer:
+                            logger.warning(
+                                "VLM OCR: page %d still empty; using the PDF "
+                                "text layer instead (%d chars)",
+                                page_no + 1, len(layer))
+                            text = layer
+                            pages_rescued.append(page_no + 1)
+                        else:
+                            logger.error(
+                                "VLM OCR: page %d is empty after retry and has "
+                                "no usable text layer — page LOST", page_no + 1)
+                            pages_empty.append(page_no + 1)
+                            text = f"<!-- OCR returned nothing for page {page_no + 1} -->"
+
                     parts.append(_strip_fence(text.strip()))
                     # Инкрементальная запись: результат каждой страницы сразу
                     # на диск — падение/зависание на середине не теряет уже
@@ -251,6 +300,12 @@ class VlmOcrBackend(ParserBackend):
         markdown = "\n\n".join(parts) + "\n"
         md_path.write_text(markdown, encoding="utf-8")
         meta = {"ocr": True, "pages_transcribed": page_count, "total_pages": total_pages}
+        if pages_rescued:
+            meta["pages_rescued"] = pages_rescued
+        if pages_empty:
+            meta["pages_empty"] = pages_empty
+            logger.warning("VLM OCR: %d of %d page(s) lost (empty OCR, no text "
+                           "layer): %s", len(pages_empty), page_count, pages_empty)
         if page_count < total_pages:
             meta["truncated"] = True
             logger.warning("VLM OCR: only first %d of %d pages transcribed "
