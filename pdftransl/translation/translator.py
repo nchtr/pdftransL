@@ -366,6 +366,19 @@ class Translator:
                             "stopping repair early", segment.id)
                 break
 
+        # Последний шанс: цикл починки не спас плейсхолдеры (мелкие модели
+        # ломаются об сами токены ⟦PH…⟧) — пробуем перевод БЕЗ маскировки.
+        # Иначе final_text() откатится на оригинал и в документ уедет
+        # непереведённый кусок.
+        if (
+            not segment.ok
+            and cfg.unmasked_rescue
+            and segment.placeholders
+            and any(i.code in ("placeholder_missing", "placeholder_unknown")
+                    for i in segment.issues)
+        ):
+            self._unmasked_rescue(segment, source_context)
+
         logger.debug(
             "segment %s: %d chars, %d placeholders, %d attempt(s), "
             "%d issue(s), %.1fs%s",
@@ -380,6 +393,64 @@ class Translator:
             if self.checkpoint is not None:
                 self.checkpoint.put(segment.source_text, segment.translation)
         return segment
+
+    def _unmasked_rescue(self, segment: Segment, source_context: str) -> None:
+        """Перевести сегмент без плейсхолдеров — спасение, когда модель
+        упорно теряет/корёжит токены ⟦PH…⟧.
+
+        Формулы/ссылки/код отправляются как есть, с инструкцией сохранить
+        их байт-в-байт. Результат принимается только если содержимое
+        КАЖДОГО плейсхолдера дословно присутствует в ответе (сравнение с
+        нормализацией пробелов) и валидаторы не нашли ошибок — иначе
+        сегмент остаётся как был (и final_text откатится на оригинал)."""
+        try:
+            system = build_translation_system(
+                self.config.source_lang, self.config.target_lang,
+                doc_summary=self.doc_summary or None,
+            )
+            user = build_user_message(segment.source_text, source_context or None)
+            user += (
+                "\n\nIMPORTANT: copy every formula, LaTeX command, URL, "
+                "inline code and citation marker EXACTLY as in the source, "
+                "byte for byte. Translate only the natural-language text."
+            )
+            raw = self._chat([
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ])
+        except Exception as exc:  # noqa: BLE001 - спасение не должно ронять сегмент
+            logger.warning("unmasked rescue failed for %s: %s", segment.id, exc)
+            return
+        segment.attempts += 1
+        rescue = _strip_wrapping_fence(raw.strip())
+        if not rescue.strip():
+            return
+        # Всё замаскированное содержимое обязано пережить перевод дословно.
+        for original in segment.placeholders.values():
+            if not _contains_normalized(rescue, original):
+                logger.info("segment %s: unmasked rescue dropped protected "
+                            "content, keeping the failed attempt", segment.id)
+                return
+        # Валидируем как обычный перевод, но без плейсхолдерной механики.
+        candidate = Segment(
+            id=segment.id, kind="translate",
+            source_text=segment.source_text,
+            masked_text=segment.source_text,
+            translation=rescue,
+        )
+        issues = validate_segment(candidate, self.config)
+        if any(i.severity == "error" for i in issues):
+            logger.info("segment %s: unmasked rescue failed validation (%s)",
+                        segment.id, "; ".join(i.code for i in issues))
+            return
+        segment.translation = rescue
+        segment.issues = issues
+        segment.issues.append(QAIssue(
+            "unmasked_rescue",
+            "placeholders kept breaking; re-translated without masking, "
+            "protected content verified verbatim", "info",
+        ))
+        logger.info("segment %s: rescued by unmasked re-translation", segment.id)
 
     def _finalize(self, segment: Segment, raw_translation: str) -> None:
         """Восстановить плейсхолдеры, провалидировать и сохранить попытку."""
@@ -445,9 +516,27 @@ class Translator:
             self._finalize(segment, raw)
             after = residual_source_ratio(
                 segment.translation, self.config.source_lang, self.config.target_lang)
-            # приняли, только если реально стало меньше исходного языка и
-            # не сломали плейсхолдеры
-            if after < before and segment.ok:
+            # Критерий приёма: остаток исходного языка ниже порога (флаг
+            # untranslated снят, а не просто «стало меньше») и плейсхолдеры
+            # целы. Именно целостность плейсхолдеров, а не полный
+            # ``segment.ok``: прочие ошибки (например, длина) не мешают
+            # отгрузить перевод, а требование полного ok отбраковывало
+            # почти всё, делая стадию бесполезной.
+            new_ph = any(
+                i.code in ("placeholder_missing", "placeholder_unknown")
+                and i.severity == "error"
+                for i in segment.issues
+            )
+            still_untranslated = any(
+                i.code == "untranslated" for i in segment.issues
+            )
+            if (
+                after < before
+                and not new_ph
+                and not still_untranslated
+                and segment.translation
+                and segment.translation.strip()
+            ):
                 segment.attempts += 1
                 fixed += 1
             else:
@@ -624,6 +713,13 @@ def _paused_issue() -> QAIssue:
         "paused", "translation paused before this segment was reached; "
         "resume the job to continue", "warning",
     )
+
+
+def _contains_normalized(haystack: str, needle: str) -> bool:
+    """Вхождение с нормализацией пробелов: перенос строки внутри формулы
+    или двойной пробел не должны заваливать проверку сохранности."""
+    norm = lambda s: " ".join(s.split())  # noqa: E731 - локальный хелпер
+    return norm(needle) in norm(haystack)
 
 
 def _strip_wrapping_fence(text: str) -> str:

@@ -152,6 +152,9 @@ export default function JobDetail({ jobId, onClose, onError }) {
         </>
       )}
 
+      {report.coverage_warning && (
+        <p className="warn-text">⚠ Неполное покрытие: {report.coverage_warning}</p>
+      )}
       {report.scan_warning && (
         <p className="warn-text">⚠ {report.scan_warning}</p>
       )}
@@ -167,6 +170,13 @@ export default function JobDetail({ jobId, onClose, onError }) {
       {report.ocr && (
         <p className="muted">
           Распознано OCR-страниц: {report.ocr.pages_transcribed}
+          {report.ocr.total_pages ? ` из ${report.ocr.total_pages}` : ''}
+          {report.ocr.pages_rescued?.length
+            ? `, взяты из текстового слоя: ${report.ocr.pages_rescued.join(', ')}`
+            : ''}
+          {report.ocr.pages_empty?.length
+            ? `, потеряны: ${report.ocr.pages_empty.join(', ')}`
+            : ''}
         </p>
       )}
 

@@ -74,7 +74,9 @@ class Reviewer:
             return segment
 
         revised = verdict.get("revised")
-        if revised:
+        # модель может вернуть revised не-строкой (null, объект) — это
+        # «ревизии нет», а не повод падать
+        if revised and isinstance(revised, str):
             restored, missing, unknown = unmask(revised.strip(), segment.placeholders)
             # The reviewer sees the *restored* translation (real formulas,
             # not tokens), so a good revision usually carries the actual
@@ -88,9 +90,15 @@ class Reviewer:
             if not missing and not unknown:
                 segment.translation = restored
                 segment.issues = validate_segment(segment, self.config)
+                # (verdict.get("notes") or ""): при {"notes": null} .get
+                # возвращает None (ключ есть!) и срез падал с TypeError,
+                # обрывая ревью всего документа
+                notes = verdict.get("notes")
+                if not isinstance(notes, str):
+                    notes = ""
                 segment.issues.append(QAIssue(
                     "reviewed_revised",
-                    f"revised by LLM reviewer: {verdict.get('notes', '')[:300]}",
+                    f"revised by LLM reviewer: {notes[:300]}",
                     "info",
                 ))
             else:
@@ -110,7 +118,16 @@ class Reviewer:
             has_flags = any(i.severity in ("warning", "error") for i in segment.issues)
             if only_flagged and not has_flags:
                 continue
-            self.review_segment(segment)
+            # Изоляция: неожиданное исключение на одном сегменте (кривой
+            # JSON модели и т.п.) раньше обрывало ревью ВСЕХ оставшихся
+            # сегментов — стадия падала целиком.
+            try:
+                self.review_segment(segment)
+            except Exception as exc:  # noqa: BLE001 - ревью не критично
+                logger.warning("Review crashed on segment %s: %s", segment.id, exc)
+                segment.issues.append(
+                    QAIssue("review_error", f"review pass crashed: {exc}", "warning")
+                )
         return segments
 
 
@@ -118,13 +135,19 @@ def _parse_review(raw: str) -> Optional[dict]:
     raw = raw.strip()
     if raw.startswith("```"):
         raw = re.sub(r"^```[a-z]*\n?|\n?```$", "", raw)
+
+    def _as_dict(value) -> Optional[dict]:
+        # json.loads может вернуть null/строку/список — для вердикта
+        # годится только объект, остальное = «не распарсили»
+        return value if isinstance(value, dict) else None
+
     try:
-        return json.loads(raw)
+        return _as_dict(json.loads(raw))
     except ValueError:
         match = _JSON_RE.search(raw)
         if match:
             try:
-                return json.loads(match.group(0))
+                return _as_dict(json.loads(match.group(0)))
             except ValueError:
                 return None
     return None

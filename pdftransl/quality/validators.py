@@ -32,6 +32,27 @@ _LANG_SCRIPT = {
 
 _WORD_RE = re.compile(r"[^\W\d_]{2,}", re.UNICODE)
 
+# «Плотность» письменности: сколько информации несёт один символ
+# относительно алфавитных языков. Иероглифика (ja/zh) в ~2.5 раза
+# плотнее: нормальный японский перевод русского абзаца из 1800 символов
+# — это ~700 символов. Без поправки валидатор длины давал ложное
+# «too_short» на КАЖДОМ здоровом CJK-переводе, загонял его в цикл
+# исправлений, там мелкая модель теряла плейсхолдеры — и в документ
+# уезжал непереведённый оригинал.
+_CJK_DENSITY = 2.5
+
+
+def _length_scale(source_lang: str, target_lang: str) -> float:
+    """Множитель для отношения длин перевод/оригинал: приводит пары с
+    разной плотностью письма (алфавит <-> иероглифы) к общей шкале."""
+    src = _LANG_SCRIPT.get(source_lang)
+    tgt = _LANG_SCRIPT.get(target_lang)
+    if tgt == "cjk" and src != "cjk":
+        return _CJK_DENSITY        # перевод компактнее — растянуть ratio
+    if src == "cjk" and tgt != "cjk":
+        return 1.0 / _CJK_DENSITY  # перевод длиннее — ужать ratio
+    return 1.0
+
 
 def _script_word_ratio(text: str, script: str) -> float:
     """Share of words written in the given script."""
@@ -66,9 +87,13 @@ def validate_segment(segment: "Segment", config: "PipelineConfig") -> list[QAIss
     if not translation.strip():
         return [QAIssue("empty_translation", "translation is empty", "error")]
 
-    # 1. Length ratio (catches truncation and runaway generation)
+    # 1. Length ratio (catches truncation and runaway generation),
+    # normalized for script density (see _length_scale: ja/zh are ~2.5x
+    # denser per character than alphabetic scripts).
     src_len = max(len(strip_placeholders(segment.masked_text or source)), 1)
-    ratio = len(translation) / src_len
+    ratio = (len(translation) / src_len) * _length_scale(
+        config.source_lang, config.target_lang
+    )
     if ratio < config.min_length_ratio:
         issues.append(QAIssue(
             "too_short",

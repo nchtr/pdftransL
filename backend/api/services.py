@@ -36,7 +36,7 @@ _BOOL_KEYS = (
     "adaptive_throttle", "parse_cache", "resume",
 )
 _BOOL_KEYS = _BOOL_KEYS + (
-    "memory_guard", "retranslate_residual", "fix_layout",
+    "memory_guard", "retranslate_residual", "unmasked_rescue", "fix_layout",
     "vision_unload_after_ocr",
 )
 _STR_KEYS = (

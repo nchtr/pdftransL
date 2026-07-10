@@ -290,13 +290,19 @@ class TranslationPipeline:
         from pdftransl.parsing.vlm_ocr_backend import VlmOcrBackend
 
         primary = get_backend(self.config)
-        scan: dict = {}
+
+        # Статистика текстового слоя нужна всегда, а не только для
+        # маршрутизации в OCR: от неё зависит и порядок фолбэков ниже.
+        # Реальный случай: MinerU падает (битая установка), у PDF при
+        # этом здоровый текстовый слой — VLM-OCR в цепочке раньше
+        # pymupdf превращал секундную задачу в часовую и резал документ
+        # по max_ocr_pages. Дёшево: PyMuPDF пробегает страницы без OCR.
+        scan: dict = scan_stats(pdf_path)
 
         # A text extractor fails on two kinds of PDF: scanned (no text
         # layer) and garbled (broken font encoding -> "кракозябры"). Both
         # need OCR. Detect and route when a vision model is available.
         if self.config.ocr_on_scan and primary.name not in _OCR_BACKENDS:
-            scan = scan_stats(pdf_path)
             if scan.get("needs_ocr"):
                 reason = "scanned" if scan.get("is_scanned") else "garbled text layer"
                 vclient = self._vision_client()
@@ -323,11 +329,17 @@ class TranslationPipeline:
                 getattr(vclient, "supports_vision", False)
                 and primary.name != "vlm_ocr"
             ):
-                # VLM OCR beats PyMuPDF on scans/broken PDFs — try it first
                 ocr = VlmOcrBackend(self.config, client=vclient)
                 non_pdf = [b for b in fbs if b.name != "pymupdf"]
                 pdf_only = [b for b in fbs if b.name == "pymupdf"]
-                fbs = non_pdf + [ocr] + pdf_only
+                if scan.get("pages") and not scan.get("needs_ocr"):
+                    # Здоровый текстовый слой: экстракция даёт 100%
+                    # покрытия за секунды — OCR только последней надеждой.
+                    fbs = non_pdf + pdf_only + [ocr]
+                else:
+                    # Скан/кракозябры (или слой неизвестен — нет PyMuPDF):
+                    # VLM OCR раньше pymupdf, экстракция тут бессильна.
+                    fbs = non_pdf + [ocr] + pdf_only
             attempts += fbs
 
         cache = (
@@ -484,6 +496,16 @@ class TranslationPipeline:
         from pdftransl.parsing.text_quality import language_mismatch
 
         wrong_script = language_mismatch(parsed.markdown, cfg.source_lang)
+
+        # HTML-таблицы от парсеров (MinerU, OCR) -> Markdown: блочный HTML
+        # не переводится вовсе, а инлайновые теги ломают LLM. Markdown-
+        # таблица и переводится, и валидируется построчно. Best-effort.
+        try:
+            from pdftransl.parsing.html_tables import convert_html_tables
+
+            parsed.markdown = convert_html_tables(parsed.markdown)
+        except Exception as exc:  # noqa: BLE001 - конвертация не критична
+            logger.warning("[%s] HTML-table conversion skipped: %s", job_id, exc)
 
         # 1. structural split; keep bibliography untranslated
         stage("split", 0.0)
@@ -842,7 +864,33 @@ class TranslationPipeline:
                 "direction (source/target languages)."
             )
         if parsed.meta.get("ocr"):
-            report["ocr"] = {"pages_transcribed": parsed.meta.get("pages_transcribed")}
+            report["ocr"] = {
+                "pages_transcribed": parsed.meta.get("pages_transcribed"),
+                "total_pages": parsed.meta.get("total_pages"),
+            }
+            if parsed.meta.get("pages_rescued"):
+                report["ocr"]["pages_rescued"] = parsed.meta["pages_rescued"]
+            if parsed.meta.get("pages_empty"):
+                report["ocr"]["pages_empty"] = parsed.meta["pages_empty"]
+        # Честное покрытие: обрезка по max_ocr_pages или потерянные страницы
+        # — это НЕ успех на 100%. Предупреждение в отчёт + статус partial.
+        coverage_problems = []
+        if parsed.meta.get("truncated"):
+            done_p = parsed.meta.get("pages_transcribed", 0)
+            total_p = parsed.meta.get("total_pages", 0)
+            coverage_problems.append(
+                f"переведены только первые {done_p} из {total_p} страниц "
+                f"(лимит max_ocr_pages={cfg.max_ocr_pages}; поднимите его "
+                "или используйте текстовый парсер)"
+            )
+        if parsed.meta.get("pages_empty"):
+            lost = parsed.meta["pages_empty"]
+            coverage_problems.append(
+                f"OCR не распознал страницы {lost} (пустой ответ модели, "
+                "текстового слоя нет) — их содержимое отсутствует в переводе"
+            )
+        if coverage_problems:
+            report["coverage_warning"] = "; ".join(coverage_problems)
         if figure_descriptions:
             report["figures_described"] = len(figure_descriptions)
         if latex_fixes:
@@ -864,7 +912,14 @@ class TranslationPipeline:
             report["auto_glossary"] = self.translator.doc_terms
         # A garbled/scanned source that wasn't OCR'd yields nonsense even if
         # every segment "translated" — never report that as a clean success.
-        if report["segments_failed"] == 0 and not report.get("scan_warning") and not stage_errors:
+        # Неполное покрытие (обрезка OCR, потерянные страницы) — тоже partial:
+        # раньше документ, переведённый на 11%, честно рапортовал «done 100%».
+        if (
+            report["segments_failed"] == 0
+            and not report.get("scan_warning")
+            and not report.get("coverage_warning")
+            and not stage_errors
+        ):
             status = "completed"
         else:
             status = "partial"
