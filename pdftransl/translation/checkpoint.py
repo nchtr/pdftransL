@@ -89,5 +89,4 @@ class Checkpoint:
     def clear(self) -> None:
         with self._lock:
             self._done.clear()
-            if self.path.exists():
-                self.path.unlink()
+            self.path.unlink(missing_ok=True)

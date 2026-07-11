@@ -11,11 +11,21 @@ import json
 import sqlite3
 import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Optional
 
 from pdftransl.exceptions import JobNotFoundError
 from pdftransl.models import new_id
+
+
+@contextmanager
+def _closing_conn(conn):
+    try:
+        with conn:
+            yield conn
+    finally:
+        conn.close()
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs (
@@ -43,10 +53,10 @@ class JobRepository:
         with self._connect() as conn:
             conn.executescript(_SCHEMA)
 
-    def _connect(self) -> sqlite3.Connection:
+    def _connect(self):
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
-        return conn
+        return _closing_conn(conn)
 
     def create(
         self,

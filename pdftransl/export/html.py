@@ -83,7 +83,7 @@ def _table_html(text: str) -> str:
     header_done = False
     for row in rows:
         cells = [c.strip() for c in row.strip().strip("|").split("|")]
-        if all(re.fullmatch(r":?-{2,}:?", c or "-") for c in cells):
+        if all(re.fullmatch(r":?-{2,}:?", c) for c in cells if c):
             header_done = True
             continue
         tag = "td" if header_done or out[-1] != "<table>" else "th"
@@ -103,6 +103,9 @@ def markdown_to_html_body(
         text = block.text
         if block.type == BlockType.HEADING:
             match = re.match(r"^(#{1,6})\s*(.*)$", text)
+            if not match:
+                parts.append(f"<p><strong>{html_mod.escape(text)}</strong></p>")
+                continue
             level = len(match.group(1))
             parts.append(f"<h{level}>{_inline_md(match.group(2))}</h{level}>")
         elif block.type == BlockType.MATH:
@@ -114,6 +117,9 @@ def markdown_to_html_body(
             parts.append(_table_html(text))
         elif block.type == BlockType.IMAGE:
             match = re.match(r"^\s*!\[([^\]]*)\]\(([^)]*)\)\s*$", text)
+            if not match:
+                parts.append(f"<p>{html_mod.escape(text)}</p>")
+                continue
             alt, src = match.group(1), match.group(2)
             src = _image_to_data_uri(src, assets)
             parts.append(f'<figure><img alt="{html_mod.escape(alt)}" src="{src}">'

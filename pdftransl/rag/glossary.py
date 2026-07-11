@@ -11,7 +11,17 @@ import csv
 import re
 import sqlite3
 import threading
+from contextlib import contextmanager
 from pathlib import Path
+
+
+@contextmanager
+def _closing_conn(conn):
+    try:
+        with conn:
+            yield conn
+    finally:
+        conn.close()
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS glossary (
@@ -34,10 +44,10 @@ class Glossary:
         with self._connect() as conn:
             conn.executescript(_SCHEMA)
 
-    def _connect(self) -> sqlite3.Connection:
+    def _connect(self):
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
-        return conn
+        return _closing_conn(conn)
 
     def add(
         self,

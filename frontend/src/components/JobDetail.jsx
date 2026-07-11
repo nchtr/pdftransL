@@ -32,31 +32,44 @@ export default function JobDetail({ jobId, onClose, onError }) {
     refresh()
   }, [refresh])
 
-  // live progress: SSE stream with polling as a fallback
   useEffect(() => {
     if (!job || (job.status !== 'running' && job.status !== 'queued')) return undefined
-    let timer = null
+    if (typeof EventSource === 'undefined') {
+      const timer = setInterval(refresh, 2000)
+      return () => clearInterval(timer)
+    }
     let source = null
-    if (typeof EventSource !== 'undefined') {
+    let reconnectTimer = null
+    let attempt = 0
+    let stopped = false
+
+    function connect() {
+      if (stopped) return
       source = new EventSource(`/api/jobs/${jobId}/events/`)
       source.onmessage = (event) => {
+        attempt = 0
         const data = JSON.parse(event.data)
         setJob((prev) => (prev ? { ...prev, ...data } : prev))
         if (['completed', 'partial', 'failed', 'paused'].includes(data.status)) {
           source.close()
-          refresh() // pull the full record with report and formats
+          source = null
+          refresh()
         }
       }
       source.onerror = () => {
         source.close()
-        timer = setInterval(refresh, 2000)
+        source = null
+        attempt = Math.min(attempt + 1, 5)
+        const delay = Math.min(1000 * Math.pow(2, attempt), 30000)
+        reconnectTimer = setTimeout(connect, delay)
       }
-    } else {
-      timer = setInterval(refresh, 2000)
     }
+    connect()
+
     return () => {
+      stopped = true
       if (source) source.close()
-      if (timer) clearInterval(timer)
+      if (reconnectTimer) clearTimeout(reconnectTimer)
     }
   }, [job?.status, jobId, refresh])
 
@@ -166,6 +179,16 @@ export default function JobDetail({ jobId, onClose, onError }) {
       )}
       {report.memory_warning && (
         <p className="warn-text">🧠 {report.memory_warning}</p>
+      )}
+      {report.stall_warning && (
+        <p className="warn-text">⏱ {report.stall_warning}</p>
+      )}
+      {report.stage_errors?.length > 0 && (
+        <ul className="stage-errors">
+          {report.stage_errors.map((err, i) => (
+            <li key={i}>{err}</li>
+          ))}
+        </ul>
       )}
       {report.ocr && (
         <p className="muted">

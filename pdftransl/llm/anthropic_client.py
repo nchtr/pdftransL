@@ -49,10 +49,12 @@ def _convert_content(content: Any) -> Any:
 
 
 class AnthropicClient(BaseLLMClient):
-    def __init__(self, config: ProviderConfig):
+    def __init__(self, config: ProviderConfig, rate_limiter=None, cooldown_gate=None):
         self.config = config
         self.model = config.model
         self.supports_vision = True
+        self._rate_limiter = rate_limiter
+        self._cooldown_gate = cooldown_gate
         key = config.resolve_api_key()
         if not key:
             raise LLMError(
@@ -96,12 +98,15 @@ class AnthropicClient(BaseLLMClient):
         for attempt in range(self.config.max_retries + 1):
             if attempt:
                 delay = min(2.0 ** attempt, 30.0)
-                # Retry-After от предыдущего 429/529 — уважаем подсказку
-                if last_error and last_error.startswith("HTTP 429") and self._retry_after:
+                if self._retry_after:
                     delay = max(delay, min(self._retry_after, 60.0))
-                delay *= 0.75 + random.random() * 0.5  # джиттер против шторма
+                delay *= 0.75 + random.random() * 0.5
                 logger.warning("Anthropic retry %d in %.1fs (%s)", attempt, delay, last_error)
                 time.sleep(delay)
+            if self._cooldown_gate is not None:
+                self._cooldown_gate.wait()
+            if self._rate_limiter is not None:
+                self._rate_limiter.wait()
             read_timeout = self.config.timeout
             try:
                 resp = self._session.post(
@@ -112,17 +117,21 @@ class AnthropicClient(BaseLLMClient):
                 last_error = f"network error: {exc}"
                 continue
             if resp.status_code in _RETRIABLE:
-                self._retry_after = _header_retry_after(resp)
+                retry_hint = _header_retry_after(resp)
+                self._retry_after = retry_hint
+                if resp.status_code in (429, 529) and self._cooldown_gate is not None:
+                    self._cooldown_gate.trip(retry_hint)
                 last_error = f"HTTP {resp.status_code}: {resp.text[:300]}"
                 continue
             if resp.status_code != 200:
                 raise LLMError(f"anthropic HTTP {resp.status_code}: {resp.text[:500]}")
+            if self._cooldown_gate is not None:
+                self._cooldown_gate.reset()
             try:
                 data = resp.json()
                 parts = [b["text"] for b in data["content"] if b.get("type") == "text"]
                 text = "".join(parts)
             except (KeyError, TypeError, ValueError):
-                # обрезанный/битый JSON перегруженного сервера — ретраябельно
                 last_error = f"malformed response: {resp.text[:300]}"
                 continue
             if not text.strip():

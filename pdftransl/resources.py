@@ -203,8 +203,7 @@ class Watchdog:
                     logger.debug("watchdog callback raised", exc_info=True)
 
     def __enter__(self) -> "Watchdog":
-        # the clock starts when monitoring starts, not at construction —
-        # otherwise setup time before `with` counts toward the first stall
+        self._stop.clear()
         self._last = self._clock()
         self._stalled = False
         if self.stall_seconds > 0:

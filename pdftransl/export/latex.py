@@ -77,7 +77,7 @@ def _table_to_latex(text: str) -> str:
     grid: list[list[str]] = []
     for row in rows:
         cells = [c.strip() for c in row.strip().strip("|").split("|")]
-        if all(re.fullmatch(r":?-{2,}:?", c or "-") for c in cells):
+        if all(re.fullmatch(r":?-{2,}:?", c) for c in cells if c):
             continue
         grid.append(cells)
     if not grid:
@@ -105,6 +105,9 @@ def markdown_to_latex(markdown: str, title: str | None = None) -> str:
         text = block.text
         if block.type == BlockType.HEADING:
             match = re.match(r"^(#{1,6})\s*(.*)$", text)
+            if not match:
+                parts.append(f"\\textbf{{{_escape_text(text)}}}")
+                continue
             command = _SECTION_BY_LEVEL[len(match.group(1))]
             parts.append(f"\\{command}{{{_inline_to_latex(match.group(2))}}}")
         elif block.type == BlockType.MATH:
@@ -119,6 +122,9 @@ def markdown_to_latex(markdown: str, title: str | None = None) -> str:
             parts.append(_table_to_latex(text))
         elif block.type == BlockType.IMAGE:
             match = re.match(r"^\s*!\[([^\]]*)\]\(([^)]*)\)\s*$", text)
+            if not match:
+                parts.append(_escape_text(text))
+                continue
             alt, src = match.group(1), match.group(2)
             figure = [
                 r"\begin{figure}[h]", r"\centering",

@@ -1,7 +1,7 @@
 // Форма новой задачи: файл, языки, провайдер/модель перевода,
 // выбор парсера PDF (авто/MinerU/OCR/...) и отдельной OCR-модели,
 // форматы экспорта и опции пайплайна. Отправляет multipart на /api/jobs/.
-import { useState } from 'react'
+import { useCallback, useState } from 'react'
 import { api } from '../api.js'
 
 const LANGS = ['en', 'ru', 'de', 'fr', 'es', 'zh', 'ja', 'uk']
@@ -37,9 +37,37 @@ export default function UploadForm({ meta, onSubmitted, onError }) {
     quality_score: false,
   })
   const [busy, setBusy] = useState(false)
+  const [dragging, setDragging] = useState(false)
 
   const engines = meta?.export_engines || {}
   const providers = meta?.providers || []
+
+  const onDragOver = useCallback((e) => {
+    e.preventDefault()
+    e.stopPropagation()
+  }, [])
+
+  const onDragEnter = useCallback((e) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setDragging(true)
+  }, [])
+
+  const onDragLeave = useCallback((e) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setDragging(false)
+  }, [])
+
+  const onDrop = useCallback((e) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setDragging(false)
+    const dropped = e.dataTransfer?.files?.[0]
+    if (dropped && dropped.type === 'application/pdf') {
+      setFile(dropped)
+    }
+  }, [])
 
   const toggleFormat = (fmt) =>
     setFormats((prev) =>
@@ -77,7 +105,13 @@ export default function UploadForm({ meta, onSubmitted, onError }) {
 
   return (
     <form onSubmit={submit} className="upload-form">
-      <label className="file-drop">
+      <label
+        className={'file-drop' + (dragging ? ' drag-over' : '')}
+        onDragOver={onDragOver}
+        onDragEnter={onDragEnter}
+        onDragLeave={onDragLeave}
+        onDrop={onDrop}
+      >
         <input
           type="file"
           accept="application/pdf"

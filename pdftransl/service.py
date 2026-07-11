@@ -69,13 +69,22 @@ class TranslationService:
             target_lang=self.config.target_lang,
         )
 
-    def process(self, job_id: str, on_stage=None) -> JobResult:
+    def process(
+        self,
+        job_id: str,
+        on_stage=None,
+        should_pause=None,
+    ) -> JobResult:
         """Run a previously submitted job (call from a worker).
 
         ``on_stage(stage, progress)`` — optional extra progress callback
         (e.g. a Telegram status message); repository bookkeeping happens
         either way, so job rows never linger as "queued" while a caller
         drives the pipeline itself.
+
+        ``should_pause()`` — optional callable returning True when the
+        caller wants a cooperative pause (the pipeline stops after the
+        current segment and returns status="paused").
         """
         job = self.repo.get(job_id)
         self.repo.update(job_id, status="running", stage="parse", progress=0.0)
@@ -92,7 +101,8 @@ class TranslationService:
                     logger.warning("External on_stage callback failed for %s", job_id)
 
         result = self.pipeline.run(
-            job["pdf_path"], job["output_dir"], job_id=job_id, on_stage=_on_stage
+            job["pdf_path"], job["output_dir"], job_id=job_id,
+            on_stage=_on_stage, should_pause=should_pause,
         )
         self.repo.update(
             job_id,
