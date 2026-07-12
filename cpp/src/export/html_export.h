@@ -1,11 +1,15 @@
 #pragma once
-#include "core/models.h"
+// Markdown -> автономный HTML с KaTeX-формулами (CDN). Свой конвертер поверх
+// parsing::splitMarkdown — понимает ровно тот markdown, который производит
+// пайплайн. Картинки инлайнятся data-URI, если найдены под assetsDir.
+// Порт pdftransl/export/html.py.
 #include <QString>
-#include <vector>
 
 namespace pdftransl {
 
-void exportHtml(const QString& markdown, const std::vector<Asset>& assets,
-                const QString& outputPath);
+// Возвращает false, если файл не удалось записать (родительский каталог
+// создаётся автоматически).
+bool exportHtml(const QString& markdown, const QString& outPath, const QString& assetsDir = {},
+                 const QString& title = QStringLiteral("Translated document"));
 
 } // namespace pdftransl

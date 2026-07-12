@@ -1,9 +1,16 @@
 #pragma once
+// Карточка задачи: статус, прогресс, степпер стадий, ETA, пауза/продолжить,
+// предупреждения из QA-отчёта, ссылки на скачивание готовых форматов.
+#include "gui/joblistwidget.h"
+#include <QMap>
+#include <QStringList>
 #include <QWidget>
-#include <QLabel>
-#include <QProgressBar>
-#include <QPushButton>
-#include <QTextBrowser>
+
+class QLabel;
+class QProgressBar;
+class QPushButton;
+class QVBoxLayout;
+class QHBoxLayout;
 
 namespace pdftransl {
 
@@ -11,23 +18,42 @@ class JobDetailWidget : public QWidget {
     Q_OBJECT
 public:
     explicit JobDetailWidget(QWidget* parent = nullptr);
-    void loadJob(const QString& jobId);
-    void setProgress(int done, int total);
-    void setStatus(const QString& status);
-    void setPreview(const QString& markdown);
+
+    // Отобразить состояние задачи (вызывается при выборе в JobListWidget и
+    // при каждом обновлении прогресса).
+    void showJob(const JobInfo& job);
+
+    // Предупреждения из QA-отчёта (сканы, память, фолбэк парсера и т.п.).
+    void setWarnings(const QStringList& warnings);
+
+    // Готовые форматы для скачивания: формат ("html"/"docx"/"pdf"/...) -> путь к файлу.
+    void setDownloads(const QMap<QString, QString>& formatToPath);
+
+signals:
+    void pauseRequested(const QString& jobId);
+    void resumeRequested(const QString& jobId);
 
 private slots:
-    void togglePause();
+    void handlePauseResume();
 
 private:
-    QString m_jobId;
-    bool m_paused = false;
+    void rebuildStageStepper();
+    static QString formatEta(int seconds);
+    static QString statusText(const QString& status);
 
+    JobInfo m_job;
+
+    QLabel* m_titleLabel;
     QLabel* m_statusLabel;
-    QLabel* m_jobIdLabel;
+    QLabel* m_etaLabel;
+    QLabel* m_errorLabel;
     QProgressBar* m_progressBar;
-    QPushButton* m_pauseBtn;
-    QTextBrowser* m_preview;
+    QWidget* m_stepperWidget;
+    QHBoxLayout* m_stepperLayout;
+    QPushButton* m_pauseResumeBtn;
+    QLabel* m_warningsLabel;
+    QWidget* m_downloadsWidget;
+    QHBoxLayout* m_downloadsLayout;
 };
 
 } // namespace pdftransl
