@@ -24,9 +24,20 @@ import time
 from pathlib import Path
 from typing import Optional
 
+from contextlib import contextmanager
+
 from pdftransl.rag.embeddings import BaseEmbedder, cosine
 
 logger = logging.getLogger(__name__)
+
+@contextmanager
+def _closing_conn(conn):
+    try:
+        with conn:
+            yield conn
+    finally:
+        conn.close()
+
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS tm_segments (
@@ -140,10 +151,10 @@ class TranslationMemory:
                     "ALTER TABLE tm_segments ADD COLUMN domain TEXT NOT NULL DEFAULT ''"
                 )
 
-    def _connect(self) -> sqlite3.Connection:
+    def _connect(self):
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
-        return conn
+        return _closing_conn(conn)
 
     # -- writing (learning) -------------------------------------------
     def add(

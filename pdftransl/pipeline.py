@@ -178,7 +178,17 @@ class TranslationPipeline:
         try:
             self._log_memory("before parse", job_id)
             stage("parse", 0.0)
-            parsed = self._parse(pdf_path, out_dir / "parse", tracker)
+            try:
+                parsed = self._parse(pdf_path, out_dir / "parse", tracker, should_pause)
+            except Exception as parse_exc:
+                if should_pause and should_pause() and "pause requested" in str(parse_exc):
+                    if tracker is not None:
+                        tracker.freeze("paused")
+                    return JobResult(
+                        job_id=job_id, status="paused",
+                        report={"paused": True, "paused_at_stage": "parse"},
+                    )
+                raise
             source_md_path = out_dir / f"{pdf_path.stem}.md"
             source_md_path.write_text(parsed.markdown, encoding="utf-8")
 
@@ -283,6 +293,7 @@ class TranslationPipeline:
     # ------------------------------------------------------------------
     def _parse(
         self, pdf_path: Path, workdir: Path, tracker: Optional[StageTracker] = None,
+        should_pause: Optional[Callable[[], bool]] = None,
     ) -> ParsedDocument:
         from pdftransl.exceptions import ParserError
         from pdftransl.parsing.base import fallback_backends
@@ -389,6 +400,8 @@ class TranslationPipeline:
         garbage_backend = None
         try:
             for i, backend in enumerate(attempts):
+                if should_pause and should_pause():
+                    raise ParserError("parsing aborted: pause requested")
                 if backend.name in tried:
                     continue
                 tried.add(backend.name)

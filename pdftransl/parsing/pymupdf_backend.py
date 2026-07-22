@@ -41,35 +41,36 @@ class PyMuPdfBackend(ParserBackend):
         if not pdf_path.exists():
             raise ParserError(f"PDF not found: {pdf_path}")
 
-        doc = fitz.open(pdf_path)
         md_parts: list[str] = []
         assets: list[Asset] = []
         seen_xrefs: set[int] = set()
 
-        for page_no, page in enumerate(doc, start=1):
-            text = page.get_text("text").strip()
-            if text:
-                # blank-line separated paragraphs; keep page marker as comment
-                md_parts.append(text)
-            for img in page.get_images(full=True):
-                xref = img[0]
-                if xref in seen_xrefs:
-                    continue
-                seen_xrefs.add(xref)
-                try:
-                    info = doc.extract_image(xref)
-                except Exception:  # pragma: no cover - malformed image
-                    continue
-                ext = info.get("ext", "png")
-                name = f"page{page_no}_img{xref}.{ext}"
-                out = images_dir / name
-                out.write_bytes(info["image"])
-                rel = f"images/{name}"
-                md_parts.append(f"![figure page {page_no}]({rel})")
-                assets.append(
-                    Asset(path=str(out), rel_path=rel, kind="image", page=page_no)
-                )
-        doc.close()
+        doc = fitz.open(pdf_path)
+        try:
+            for page_no, page in enumerate(doc, start=1):
+                text = page.get_text("text").strip()
+                if text:
+                    md_parts.append(text)
+                for img in page.get_images(full=True):
+                    xref = img[0]
+                    if xref in seen_xrefs:
+                        continue
+                    seen_xrefs.add(xref)
+                    try:
+                        info = doc.extract_image(xref)
+                    except Exception:  # pragma: no cover - malformed image
+                        continue
+                    ext = info.get("ext", "png")
+                    name = f"page{page_no}_img{xref}.{ext}"
+                    out = images_dir / name
+                    out.write_bytes(info["image"])
+                    rel = f"images/{name}"
+                    md_parts.append(f"![figure page {page_no}]({rel})")
+                    assets.append(
+                        Asset(path=str(out), rel_path=rel, kind="image", page=page_no)
+                    )
+        finally:
+            doc.close()
 
         markdown = "\n\n".join(md_parts) + "\n"
         md_path = workdir / f"{pdf_path.stem}.md"

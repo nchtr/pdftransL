@@ -13,7 +13,7 @@ def create_client(
     config: ProviderConfig, rate_limiter=None, cooldown_gate=None
 ) -> BaseLLMClient:
     if config.kind == "anthropic":
-        return AnthropicClient(config)
+        return AnthropicClient(config, rate_limiter=rate_limiter, cooldown_gate=cooldown_gate)
     return OpenAICompatClient(
         config, rate_limiter=rate_limiter, cooldown_gate=cooldown_gate
     )

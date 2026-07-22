@@ -105,7 +105,7 @@ export default function SettingsPanel({ meta, onError }) {
           Парсер
           <select value={draft.parser_backend ?? ''} onChange={(e) => set('parser_backend', e.target.value)}>
             <option value="">— auto</option>
-            {['mineru_local', 'mineru_api', 'marker', 'docling', 'vlm_ocr', 'pymupdf'].map((b) => (
+            {['auto', 'mineru_local', 'mineru_api', 'vlm_ocr', 'nougat', 'marker', 'docling', 'grobid', 'pymupdf'].map((b) => (
               <option key={b} value={b}>{b}</option>
             ))}
           </select>

@@ -347,22 +347,19 @@ class PipelineConfig:
         ):
             if env.get(flag) is not None:
                 kwargs[attr] = env[flag].strip().lower() in ("1", "true", "yes", "on")
-        if env.get("PDFTRANSL_MAX_WORKERS"):
-            kwargs["max_workers"] = int(env["PDFTRANSL_MAX_WORKERS"])
-        if env.get("PDFTRANSL_TRANSLATE_BATCH_SIZE"):
-            kwargs["translate_batch_size"] = int(env["PDFTRANSL_TRANSLATE_BATCH_SIZE"])
-        if env.get("PDFTRANSL_PARSER_TIMEOUT"):
-            kwargs["parser_timeout"] = int(env["PDFTRANSL_PARSER_TIMEOUT"])
-        if env.get("PDFTRANSL_OCR_DPI"):
-            kwargs["ocr_dpi"] = int(env["PDFTRANSL_OCR_DPI"])
-        if env.get("PDFTRANSL_OCR_PAGE_TIMEOUT"):
-            kwargs["ocr_page_timeout"] = int(env["PDFTRANSL_OCR_PAGE_TIMEOUT"])
-        if env.get("PDFTRANSL_MIN_FREE_MEMORY_MB"):
-            kwargs["min_free_memory_mb"] = int(env["PDFTRANSL_MIN_FREE_MEMORY_MB"])
+        for env_name, attr in (
+            ("PDFTRANSL_MAX_WORKERS", "max_workers"),
+            ("PDFTRANSL_TRANSLATE_BATCH_SIZE", "translate_batch_size"),
+            ("PDFTRANSL_PARSER_TIMEOUT", "parser_timeout"),
+            ("PDFTRANSL_OCR_DPI", "ocr_dpi"),
+            ("PDFTRANSL_OCR_PAGE_TIMEOUT", "ocr_page_timeout"),
+            ("PDFTRANSL_MIN_FREE_MEMORY_MB", "min_free_memory_mb"),
+            ("PDFTRANSL_RPM", "rpm_limit"),
+        ):
+            if env.get(env_name):
+                kwargs[attr] = int(env[env_name])
         if env.get("PDFTRANSL_OCR_PROMPT"):
             kwargs["ocr_prompt"] = env["PDFTRANSL_OCR_PROMPT"]
-        if env.get("PDFTRANSL_RPM"):
-            kwargs["rpm_limit"] = int(env["PDFTRANSL_RPM"])
         if env.get("PDFTRANSL_FALLBACK_PROVIDERS"):
             kwargs["fallback_providers"] = [
                 p.strip() for p in env["PDFTRANSL_FALLBACK_PROVIDERS"].split(",") if p.strip()

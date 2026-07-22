@@ -58,7 +58,7 @@ _SETTING_TYPES: dict[str, type] = {
     "vision_unload_after_ocr": bool,
     "tm_autoexport_every": int, "min_free_memory_mb": int,
     "memory_wait_timeout": int, "stall_warning_seconds": int, "max_ocr_pages": int,
-    "ocr_dpi": int, "ocr_prompt": str,
+    "ocr_prompt": str,
     "log_level": str,
 }
 

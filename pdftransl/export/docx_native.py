@@ -99,6 +99,9 @@ def export_docx(
         text = block.text
         if block.type == BlockType.HEADING:
             match = re.match(r"^(#{1,6})\s*(.*)$", text)
+            if not match:
+                document.add_heading(_clean(text), level=1)
+                continue
             document.add_heading(_clean(match.group(2)), level=min(len(match.group(1)), 9))
         elif block.type == BlockType.MATH:
             paragraph = document.add_paragraph()
@@ -128,7 +131,7 @@ def export_docx(
             grid = []
             for row in rows:
                 cells = [c.strip() for c in row.strip().strip("|").split("|")]
-                if all(re.fullmatch(r":?-{2,}:?", c or "-") for c in cells):
+                if all(re.fullmatch(r":?-{2,}:?", c) for c in cells if c):
                     continue
                 grid.append(cells)
             if grid:
@@ -140,6 +143,9 @@ def export_docx(
                         _add_runs(table.cell(i, j).paragraphs[0], cell)
         elif block.type == BlockType.IMAGE:
             match = re.match(r"^\s*!\[([^\]]*)\]\(([^)]*)\)\s*$", text)
+            if not match:
+                document.add_paragraph(_clean(text))
+                continue
             path = _find_image(match.group(2), assets)
             if path is not None:
                 try:

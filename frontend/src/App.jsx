@@ -37,27 +37,37 @@ export default function App() {
     refreshJobs()
   }, [refreshJobs])
 
-  // live job list: one persistent SSE connection instead of polling
-  // /api/jobs/ on an interval. Falls back to polling only if the browser
-  // has no EventSource or the stream errors out.
   useEffect(() => {
-    let timer = null
+    if (typeof EventSource === 'undefined') {
+      const timer = setInterval(refreshJobs, 2000)
+      return () => clearInterval(timer)
+    }
     let source = null
-    if (typeof EventSource !== 'undefined') {
+    let reconnectTimer = null
+    let attempt = 0
+    let stopped = false
+
+    function connect() {
+      if (stopped) return
       source = new EventSource('/api/jobs/events/')
       source.onmessage = (event) => {
+        attempt = 0
         setJobs(JSON.parse(event.data).jobs)
       }
       source.onerror = () => {
         source.close()
-        timer = setInterval(refreshJobs, 2000)
+        source = null
+        attempt = Math.min(attempt + 1, 5)
+        const delay = Math.min(1000 * Math.pow(2, attempt), 30000)
+        reconnectTimer = setTimeout(connect, delay)
       }
-    } else {
-      timer = setInterval(refreshJobs, 2000)
     }
+    connect()
+
     return () => {
+      stopped = true
       if (source) source.close()
-      if (timer) clearInterval(timer)
+      if (reconnectTimer) clearTimeout(reconnectTimer)
     }
   }, [refreshJobs])
 
