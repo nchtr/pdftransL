@@ -42,7 +42,14 @@ atexit.register(_shutdown_pool)
 try:
     from celery import shared_task
 
-    @shared_task(bind=True, time_limit=7200, queue="pdftransl")
+    @shared_task(
+        bind=True,
+        soft_time_limit=settings.CELERY_TASK_SOFT_TIME_LIMIT,
+        time_limit=settings.CELERY_TASK_TIME_LIMIT,
+        acks_late=True,
+        reject_on_worker_lost=True,
+        queue="pdftransl",
+    )
     def run_translation_task(self, job_id: str) -> str:
         try:
             return services.run_job(job_id)

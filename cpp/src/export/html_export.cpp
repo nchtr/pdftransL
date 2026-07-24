@@ -28,6 +28,18 @@ QString escapeHtml(const QString& text) {
     return out;
 }
 
+QString safeUrl(const QString& value, bool image = false) {
+    const QString url = value.trimmed();
+    const QString lower = url.toLower();
+    const bool allowed = image
+        ? (lower.startsWith("https://") || lower.startsWith("http://") ||
+           lower.startsWith("data:") || lower.startsWith("/") || lower.startsWith("./"))
+        : (lower.startsWith("https://") || lower.startsWith("http://") ||
+           lower.startsWith("mailto:") || lower.startsWith("/") ||
+           lower.startsWith("./") || lower.startsWith("#"));
+    return allowed ? escapeHtml(url).replace('"', "&quot;") : QString();
+}
+
 // Экранирует HTML, защищая математику от разметки, и применяет базовое
 // инлайн-форматирование (**bold**, *italic*, `code`, ссылки, картинки).
 QString inlineMarkdownToHtml(const QString& text) {
@@ -51,10 +63,27 @@ QString inlineMarkdownToHtml(const QString& text) {
 
     working = escapeHtml(working);
 
-    static const QRegularExpression imageRe(QStringLiteral("!\\[([^\\]]*)\\]\\(([^)]+)\\)"));
-    working.replace(imageRe, QStringLiteral(R"(<img alt="\1" src="\2">)"));
-    static const QRegularExpression linkRe(QStringLiteral("\\[([^\\]]+)\\]\\(([^)]+)\\)"));
-    working.replace(linkRe, QStringLiteral(R"(<a href="\2">\1</a>)"));
+    auto replaceUrls = [](const QString& input, const QRegularExpression& re, bool image) {
+        QString out;
+        int lastEnd = 0;
+        auto it = re.globalMatch(input);
+        while (it.hasNext()) {
+            const auto match = it.next();
+            out += input.mid(lastEnd, match.capturedStart() - lastEnd);
+            if (image) {
+                out += QStringLiteral("<img alt=\"%1\" src=\"%2\">")
+                           .arg(match.captured(1), safeUrl(match.captured(2), true));
+            } else {
+                out += QStringLiteral("<a href=\"%1\" rel=\"noopener noreferrer\">%2</a>")
+                           .arg(safeUrl(match.captured(2)), match.captured(1));
+            }
+            lastEnd = match.capturedEnd();
+        }
+        out += input.mid(lastEnd);
+        return out;
+    };
+    working = replaceUrls(working, QRegularExpression(QStringLiteral("!\\[([^\\]]*)\\]\\(([^)]+)\\)")), true);
+    working = replaceUrls(working, QRegularExpression(QStringLiteral("\\[([^\\]]+)\\]\\(([^)]+)\\)")), false);
     static const QRegularExpression codeRe(QStringLiteral("`([^`]+)`"));
     working.replace(codeRe, QStringLiteral("<code>\\1</code>"));
     static const QRegularExpression boldRe(QStringLiteral("\\*\\*([^*]+)\\*\\*"));
@@ -208,14 +237,14 @@ QString markdownToHtmlBody(const QString& markdown, const QString& assetsDir) {
             const QString alt = m.hasMatch() ? m.captured(1) : QString();
             const QString src = imageToDataUri(m.hasMatch() ? m.captured(2) : QString(), assetsDir);
             QString figure =
-                QStringLiteral("<figure><img alt=\"%1\" src=\"%2\">").arg(escapeHtml(alt), src);
+                QStringLiteral("<figure><img alt=\"%1\" src=\"%2\">").arg(escapeHtml(alt), safeUrl(src, true));
             if (!alt.isEmpty()) figure += QStringLiteral("<figcaption>%1</figcaption>").arg(escapeHtml(alt));
             figure += QStringLiteral("</figure>");
             parts << figure;
             break;
         }
         case BlockType::Html:
-            parts << text;
+            parts << QStringLiteral("<pre><code>%1</code></pre>").arg(escapeHtml(text));
             break;
         default: {
             QString body = inlineMarkdownToHtml(text);

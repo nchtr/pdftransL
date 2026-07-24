@@ -26,6 +26,7 @@ endif()
 set(CORE_SOURCES
     src/core/config.cpp
     src/core/models.cpp
+    src/pipeline/desktop_pipeline.cpp
 )
 
 set(LLM_SOURCES

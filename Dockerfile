@@ -40,5 +40,14 @@ ENV PDFTRANSL_DATA_DIR=/data \
 WORKDIR /app/backend
 RUN python manage.py collectstatic --noinput 2>/dev/null || true
 
+# Parsers and document converters process untrusted input.  Do not grant a
+# compromise of one of those tools root access to the container or data volume.
+RUN useradd --create-home --uid 10001 appuser && \
+    mkdir -p /data && \
+    chown -R appuser:appuser /app /data
+COPY docker-entrypoint.sh /usr/local/bin/pdftransl-entrypoint
+RUN chmod 755 /usr/local/bin/pdftransl-entrypoint
+
 EXPOSE 8000
-CMD ["sh", "-c", "python manage.py migrate && gunicorn config.wsgi:application --bind 0.0.0.0:8000 --workers 2 --timeout 600"]
+ENTRYPOINT ["/usr/local/bin/pdftransl-entrypoint"]
+CMD ["sh", "-c", "python manage.py migrate && gunicorn config.wsgi:application --bind 0.0.0.0:8000 --workers ${GUNICORN_WORKERS:-1} --timeout 600"]

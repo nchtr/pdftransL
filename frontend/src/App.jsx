@@ -38,37 +38,10 @@ export default function App() {
   }, [refreshJobs])
 
   useEffect(() => {
-    if (typeof EventSource === 'undefined') {
-      const timer = setInterval(refreshJobs, 2000)
-      return () => clearInterval(timer)
-    }
-    let source = null
-    let reconnectTimer = null
-    let attempt = 0
-    let stopped = false
-
-    function connect() {
-      if (stopped) return
-      source = new EventSource('/api/jobs/events/')
-      source.onmessage = (event) => {
-        attempt = 0
-        setJobs(JSON.parse(event.data).jobs)
-      }
-      source.onerror = () => {
-        source.close()
-        source = null
-        attempt = Math.min(attempt + 1, 5)
-        const delay = Math.min(1000 * Math.pow(2, attempt), 30000)
-        reconnectTimer = setTimeout(connect, delay)
-      }
-    }
-    connect()
-
-    return () => {
-      stopped = true
-      if (source) source.close()
-      if (reconnectTimer) clearTimeout(reconnectTimer)
-    }
+    // Polling keeps Gunicorn workers free. A synchronous SSE stream would pin
+    // one worker per browser tab for the lifetime of a translation.
+    const timer = setInterval(refreshJobs, 3000)
+    return () => clearInterval(timer)
   }, [refreshJobs])
 
   const deleteJob = async (id) => {

@@ -20,6 +20,22 @@ from pdftransl.parsing.splitter import split_markdown
 
 _MAX_INLINE_IMAGE = 4 * 1024 * 1024
 
+
+def _safe_url(value: str, *, image: bool = False) -> str:
+    """Return a URL safe to put in an HTML attribute.
+
+    Parsed PDFs are untrusted input.  Never let Markdown turn
+    ``javascript:`` or an arbitrary raw attribute into executable HTML.
+    """
+    value = value.strip()
+    lowered = value.lower()
+    allowed = ("http://", "https://", "mailto:", "/", "./", "../", "#")
+    if image:
+        allowed = ("http://", "https://", "data:", "/", "./", "../")
+    if not value or not lowered.startswith(allowed):
+        return ""
+    return html_mod.escape(value, quote=True)
+
 _STYLE = """
 <style>
   body { font-family: Georgia, 'Times New Roman', serif; max-width: 52rem;
@@ -53,8 +69,20 @@ def _inline_md(text: str) -> str:
     text = re.sub(r"`([^`]+)`", r"<code>\1</code>", text)
     text = re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", text)
     text = re.sub(r"(?<!\*)\*([^*\n]+)\*(?!\*)", r"<em>\1</em>", text)
-    text = re.sub(r"!\[([^\]]*)\]\(([^)]+)\)", r'<img alt="\1" src="\2">', text)
-    text = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r'<a href="\2">\1</a>', text)
+    text = re.sub(
+        r"!\[([^\]]*)\]\(([^)]+)\)",
+        lambda m: '<img alt="{}" src="{}">'.format(
+            html_mod.escape(m.group(1), quote=True), _safe_url(m.group(2), image=True)
+        ),
+        text,
+    )
+    text = re.sub(
+        r"\[([^\]]+)\]\(([^)]+)\)",
+        lambda m: '<a href="{}" rel="noopener noreferrer">{}</a>'.format(
+            _safe_url(m.group(2)), m.group(1)
+        ),
+        text,
+    )
 
     def _restore(match: re.Match) -> str:
         return html_mod.escape(protected[int(match.group(1))], quote=False)
@@ -122,15 +150,17 @@ def markdown_to_html_body(
                 continue
             alt, src = match.group(1), match.group(2)
             src = _image_to_data_uri(src, assets)
-            parts.append(f'<figure><img alt="{html_mod.escape(alt)}" src="{src}">'
+            parts.append(f'<figure><img alt="{html_mod.escape(alt, quote=True)}" src="{_safe_url(src, image=True)}">'
                          + (f"<figcaption>{html_mod.escape(alt)}</figcaption>" if alt else "")
                          + "</figure>")
         elif block.type == BlockType.HTML:
-            parts.append(text)
+            # Parser output is not a trusted HTML template.  Keeping raw tags
+            # here made an uploaded PDF capable of creating same-origin XSS.
+            parts.append(f"<pre><code>{html_mod.escape(text)}</code></pre>")
         else:
             body = _inline_md(text).replace("\n", "<br>\n")
             parts.append(f"<p>{body}</p>")
-    # rewrite plain <img src> paths that came through inline markdown
+    # Rewrite only image tags generated above. Raw HTML is escaped.
     if assets is not None:
         parts = [
             re.sub(

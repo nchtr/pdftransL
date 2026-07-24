@@ -27,11 +27,13 @@ def pdf_hash(pdf_path: str | Path) -> str:
 
 
 class ParseCache:
-    def __init__(self, root: str | Path):
+    def __init__(self, root: str | Path, namespace: str = "v2"):
         self.root = Path(root) / ".parse_cache"
+        self.namespace = namespace
 
     def _entry_dir(self, key: str, backend: str) -> Path:
-        return self.root / f"{key}_{backend}"
+        safe_namespace = "".join(c if c.isalnum() or c in "_-" else "_" for c in self.namespace)
+        return self.root / f"{key}_{backend}_{safe_namespace}"
 
     def get(self, pdf_path: str | Path, backend: str) -> Optional[ParsedDocument]:
         entry = self._entry_dir(pdf_hash(pdf_path), backend)

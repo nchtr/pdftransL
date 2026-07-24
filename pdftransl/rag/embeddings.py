@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import math
 import re
+import time
 from abc import ABC, abstractmethod
 from typing import Optional
 
@@ -84,15 +85,35 @@ class ApiEmbedder(BaseEmbedder):
         headers = {"Content-Type": "application/json"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
-        resp = self._requests.post(
-            f"{self.base_url}/embeddings",
-            json={"model": self.model, "input": texts},
-            headers=headers,
-            timeout=120,
-        )
-        resp.raise_for_status()
-        data = resp.json()["data"]
-        vectors = [item["embedding"] for item in data]
+        last_error = None
+        for attempt in range(3):
+            try:
+                resp = self._requests.post(
+                    f"{self.base_url}/embeddings",
+                    json={"model": self.model, "input": texts},
+                    headers=headers,
+                    timeout=(15, 120),
+                )
+                if resp.status_code in (408, 429, 500, 502, 503, 504):
+                    last_error = f"HTTP {resp.status_code}"
+                    time.sleep(2 ** attempt)
+                    continue
+                resp.raise_for_status()
+                data = resp.json()["data"]
+                # OpenAI-compatible endpoints identify each vector by index;
+                # do not silently pair a reordered response with wrong text.
+                data = sorted(data, key=lambda item: item.get("index", 0))
+                vectors = [item["embedding"] for item in data]
+                if len(vectors) != len(texts):
+                    raise ValueError("embedding response length mismatch")
+                break
+            except (self._requests.RequestException, KeyError, TypeError, ValueError) as exc:
+                last_error = str(exc)
+                if attempt == 2:
+                    raise RuntimeError(f"embedding request failed: {last_error}") from exc
+                time.sleep(2 ** attempt)
+        else:  # pragma: no cover - loop either breaks or raises
+            raise RuntimeError(f"embedding request failed: {last_error}")
         if vectors:
             self.dim = len(vectors[0])
         return vectors

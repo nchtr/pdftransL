@@ -110,6 +110,14 @@ void TranslationMemory::add(const QString& source, const QString& target, const 
         del.addBindValue(srcLang);
         del.addBindValue(tgtLang);
         del.exec();
+    } else {
+        QSqlQuery del(conn);
+        del.prepare(QStringLiteral(
+            "DELETE FROM tm_segments WHERE source_hash=? AND src_lang=? AND tgt_lang=? AND origin='auto'"));
+        del.addBindValue(hashOf(src));
+        del.addBindValue(srcLang);
+        del.addBindValue(tgtLang);
+        del.exec();
     }
 
     QSqlQuery ins(conn);

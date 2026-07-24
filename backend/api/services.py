@@ -8,9 +8,13 @@ pause/resume, правки человека -> TM, пересборка файл
 from __future__ import annotations
 
 import logging
+import hashlib
+import os
+import tempfile
 from pathlib import Path
 
 from django.conf import settings
+from django.db import transaction
 from django.utils import timezone
 
 from pdftransl.config import PipelineConfig
@@ -26,6 +30,12 @@ from pdftransl.service import looks_like_term
 from .models import SegmentRecord, ServerConfig, TranslationJob
 
 logger = logging.getLogger(__name__)
+
+
+def owner_db_path(owner: str) -> str:
+    """Stable per-principal TM/glossary database path without exposing names."""
+    digest = hashlib.sha256(owner.encode("utf-8")).hexdigest()[:24]
+    return str(Path(settings.PDFTRANSL_DB).parent / "tenants" / f"{digest}.db")
 
 # option keys shared by per-job options AND runtime server settings
 _BOOL_KEYS = (
@@ -115,7 +125,7 @@ def scan_upload(uploaded_file) -> tuple[bool, str]:
 
 def build_config(job: TranslationJob) -> PipelineConfig:
     overrides: dict = {
-        "db_path": settings.PDFTRANSL_DB,
+        "db_path": owner_db_path(job.owner),
         "output_dir": settings.PDFTRANSL_OUTPUT_DIR,
     }
     # precedence: env defaults < runtime server settings < per-job options
@@ -140,12 +150,19 @@ def compute_stage_plan(job: TranslationJob) -> list[dict]:
 
 def run_job(job_id: str) -> str:
     """Execute the pipeline for a job; called from Celery or a thread."""
-    job = TranslationJob.objects.get(pk=job_id)
-    job.status = TranslationJob.Status.RUNNING
+    try:
+        with transaction.atomic():
+            job = TranslationJob.objects.select_for_update().get(pk=job_id)
+            if job.status != TranslationJob.Status.QUEUED:
+                return job.status
+            job.status = TranslationJob.Status.RUNNING
     # Reset on every (re-)dispatch, including resume — the ETA estimate is
     # based on this run's pace, not inflated by time spent queued/paused.
-    job.started_at = timezone.now()
-    job.save(update_fields=["status", "started_at", "updated_at"])
+            job.started_at = timezone.now()
+            job.save(update_fields=["status", "started_at", "updated_at"])
+    except TranslationJob.DoesNotExist:
+        # A queued task can legitimately be deleted before a worker claims it.
+        return "deleted"
 
     def on_stage(stage: str, progress: float) -> None:
         TranslationJob.objects.filter(pk=job_id).update(
@@ -236,6 +253,8 @@ def prepare_resume(job: TranslationJob) -> None:
 
 def save_correction(job: TranslationJob, order: int, corrected: str) -> SegmentRecord:
     """Store a human correction and feed it into the translation memory."""
+    if not isinstance(corrected, str):
+        raise ValueError("corrected must be a string")
     segment = SegmentRecord.objects.get(job=job, order=order)
     segment.corrected = corrected.strip()
     segment.ok = True
@@ -266,10 +285,24 @@ def rebuild_outputs(job: TranslationJob) -> dict:
         raise ValueError("job has no stored segments")
     markdown = assemble([s.final_text() for s in segments])
 
-    md_path = Path(job.outputs.get("md") or "")
-    if not md_path.parent.exists():
+    output_root = Path(settings.PDFTRANSL_OUTPUT_DIR).resolve()
+    md_path = Path(job.outputs.get("md") or "").resolve()
+    if (not md_path.is_relative_to(output_root) or md_path.suffix != ".md"
+            or not md_path.parent.is_dir()):
         raise ValueError("original output directory is gone")
-    md_path.write_text(markdown, encoding="utf-8")
+    fd, temporary = tempfile.mkstemp(prefix=f".{md_path.name}.", suffix=".tmp", dir=md_path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(markdown)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(temporary, md_path)
+    except Exception:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise
 
     config = build_config(job)
     formats = [f for f in config.export_formats if f in ("html", "docx", "pdf", "latex")]

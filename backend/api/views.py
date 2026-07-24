@@ -16,6 +16,7 @@ from pathlib import Path
 
 from django.conf import settings
 from django.core.cache import cache
+from django.db import transaction
 from django.http import (
     FileResponse,
     Http404,
@@ -62,6 +63,78 @@ _SETTING_TYPES: dict[str, type] = {
     "log_level": str,
 }
 
+# Job options arrive from an untrusted multipart request.  Keep the accepted
+# surface small and bound values that directly determine resource usage.
+_JOB_OPTION_TYPES = {
+    key: value
+    for key, value in _SETTING_TYPES.items()
+    if key not in {"log_level", "source_lang", "target_lang", "provider", "model"}
+}
+_INT_LIMITS: dict[str, tuple[int, int]] = {
+    "max_workers": (1, 8), "rpm_limit": (1, 10_000),
+    "parser_timeout": (30, 7_200), "ocr_dpi": (72, 600),
+    "translate_batch_size": (1, 500), "tm_autoexport_every": (0, 100_000),
+    "min_free_memory_mb": (0, 1_000_000), "memory_wait_timeout": (0, 7_200),
+    "stall_warning_seconds": (10, 7_200), "max_ocr_pages": (1, 1_000),
+}
+_EXPORT_FORMATS = {"html", "docx", "pdf", "latex"}
+
+
+def _coerce_value(key: str, value, expected: type):
+    """Strictly coerce an API setting or job option, or raise ValueError."""
+    if expected is bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str) and value.lower() in ("1", "true", "yes", "on"):
+            return True
+        if isinstance(value, str) and value.lower() in ("0", "false", "no", "off"):
+            return False
+        raise ValueError("must be a boolean")
+    if expected is int:
+        if isinstance(value, bool):
+            raise ValueError("must be an integer")
+        result = int(value)
+        if key in _INT_LIMITS:
+            low, high = _INT_LIMITS[key]
+            if not low <= result <= high:
+                raise ValueError(f"must be between {low} and {high}")
+        return result
+    if expected is list:
+        if isinstance(value, str):
+            value = [v.strip() for v in value.split(",") if v.strip()]
+        if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+            raise ValueError("must be a list of strings")
+        return value
+    if not isinstance(value, str):
+        raise ValueError("must be a string")
+    return value.strip()
+
+
+def _validate_job_options(options: dict) -> dict:
+    cleaned = {}
+    for key, value in options.items():
+        if key not in _JOB_OPTION_TYPES:
+            raise ValueError(f"unknown option '{key}'")
+        if value is not None:
+            cleaned[key] = _coerce_value(key, value, _JOB_OPTION_TYPES[key])
+    if "formats" in cleaned:
+        formats = cleaned["formats"]
+        if not formats or set(formats) - _EXPORT_FORMATS:
+            raise ValueError("formats must contain only html, docx, pdf, latex")
+    if "fallback_providers" in cleaned:
+        unknown = set(cleaned["fallback_providers"]) - set(PROVIDER_PRESETS)
+        if unknown:
+            raise ValueError(f"unknown fallback provider(s): {', '.join(sorted(unknown))}")
+    for key in ("vision_provider",):
+        if key in cleaned and cleaned[key] not in PROVIDER_PRESETS:
+            raise ValueError(f"unknown provider '{cleaned[key]}'")
+    if "parser_backend" in cleaned and cleaned["parser_backend"] not in {
+        "auto", "mineru_local", "mineru_api", "nougat", "marker", "docling",
+        "grobid", "vlm_ocr", "pymupdf",
+    }:
+        raise ValueError(f"unknown parser_backend '{cleaned['parser_backend']}'")
+    return cleaned
+
 _CONTENT_TYPES = {
     "md": "text/markdown; charset=utf-8",
     "bilingual": "text/markdown; charset=utf-8",
@@ -73,16 +146,21 @@ _CONTENT_TYPES = {
 }
 
 
-def _job_or_404(job_id) -> TranslationJob:
+def _owner(request) -> str:
+    return getattr(request, "pdftransl_owner", "local")
+
+
+def _job_or_404(request, job_id) -> TranslationJob:
     try:
-        return TranslationJob.objects.get(pk=job_id)
+        return TranslationJob.objects.get(pk=job_id, owner=_owner(request))
     except (TranslationJob.DoesNotExist, ValueError):
         raise Http404
 
 
-def _engine_config() -> PipelineConfig:
+def _engine_config(request) -> PipelineConfig:
     return PipelineConfig.from_env(
-        db_path=settings.PDFTRANSL_DB, output_dir=settings.PDFTRANSL_OUTPUT_DIR
+        db_path=services.owner_db_path(_owner(request)),
+        output_dir=settings.PDFTRANSL_OUTPUT_DIR,
     )
 
 
@@ -108,7 +186,7 @@ def _upload_allowed(ip: str) -> bool:
 @require_http_methods(["GET", "POST"])
 def jobs(request):
     if request.method == "GET":
-        items = [j.as_dict() for j in TranslationJob.objects.all()[:100]]
+        items = [j.as_list_dict() for j in TranslationJob.objects.filter(owner=_owner(request))[:100]]
         return JsonResponse({"jobs": items})
 
     ip = request.META.get("REMOTE_ADDR", "?")
@@ -147,13 +225,30 @@ def jobs(request):
             options = json.loads(raw_options)
         except ValueError:
             return JsonResponse({"error": "options must be JSON"}, status=400)
+    if not isinstance(options, dict):
+        return JsonResponse({"error": "options must be a JSON object"}, status=400)
+    try:
+        options = _validate_job_options(options)
+    except ValueError as exc:
+        return JsonResponse({"error": f"invalid options: {exc}"}, status=400)
+
+    source_lang = request.POST.get("source_lang", "en").lower().strip()
+    target_lang = request.POST.get("target_lang", "ru").lower().strip()
+    if source_lang not in LANG_NAMES or target_lang not in LANG_NAMES:
+        return JsonResponse({"error": "unsupported source_lang or target_lang"}, status=400)
+    if source_lang == target_lang:
+        return JsonResponse({"error": "source_lang and target_lang must differ"}, status=400)
+    provider = request.POST.get("provider", "").strip()
+    if provider and provider not in PROVIDER_PRESETS:
+        return JsonResponse({"error": f"unknown provider '{provider}'"}, status=400)
 
     job = TranslationJob.objects.create(
         pdf=pdf,
         original_name=pdf.name,
-        source_lang=request.POST.get("source_lang", "en"),
-        target_lang=request.POST.get("target_lang", "ru"),
-        provider=request.POST.get("provider", ""),
+        owner=_owner(request),
+        source_lang=source_lang,
+        target_lang=target_lang,
+        provider=provider,
         model=request.POST.get("model", ""),
         options=options,
     )
@@ -178,34 +273,41 @@ def jobs(request):
 @csrf_exempt
 @require_http_methods(["GET", "DELETE"])
 def job_detail(request, job_id):
-    job = _job_or_404(job_id)
     if request.method == "GET":
+        job = _job_or_404(request, job_id)
         return JsonResponse(job.as_dict())
 
-    # DELETE: remove the job row, its uploaded PDF and its output dir
-    if job.status == TranslationJob.Status.RUNNING:
-        return JsonResponse({"error": "job is running; wait for it to finish"},
-                            status=409)
+    # Claim deletion atomically so a queued worker cannot start after its
+    # files have been removed.
+    with transaction.atomic():
+        try:
+            job = TranslationJob.objects.select_for_update().get(pk=job_id, owner=_owner(request))
+        except TranslationJob.DoesNotExist:
+            raise Http404
+        if job.status in (TranslationJob.Status.QUEUED, TranslationJob.Status.RUNNING):
+            return JsonResponse({"error": "job is queued or running; pause it first"},
+                                status=409)
+        md = (job.outputs or {}).get("md")
+        pdf_name = job.pdf.name
+        job.delete()
 
     output_root = Path(settings.PDFTRANSL_OUTPUT_DIR).resolve()
-    md = (job.outputs or {}).get("md")
     if md:
         out_dir = Path(md).resolve().parent
         # ИСПРАВЛЕНИЕ: Защита от Path Traversal, удаляем только вложенные папки, а не корень
         if out_dir.exists() and out_dir.is_relative_to(output_root) and out_dir != output_root:
             shutil.rmtree(out_dir, ignore_errors=True)
     try:
-        job.pdf.delete(save=False)
+        TranslationJob._meta.get_field("pdf").storage.delete(pdf_name)
     except Exception:
         pass
-    job.delete()
     return JsonResponse({"deleted": True})
 
 
 @csrf_exempt
 @require_POST
 def job_pause(request, job_id):
-    job = _job_or_404(job_id)
+    job = _job_or_404(request, job_id)
     if job.status not in (TranslationJob.Status.QUEUED, TranslationJob.Status.RUNNING):
         return JsonResponse(
             {"error": f"cannot pause a job in status '{job.status}'"}, status=409
@@ -217,7 +319,7 @@ def job_pause(request, job_id):
 @csrf_exempt
 @require_POST
 def job_resume(request, job_id):
-    job = _job_or_404(job_id)
+    job = _job_or_404(request, job_id)
     if job.status != TranslationJob.Status.PAUSED:
         return JsonResponse(
             {"error": f"cannot resume a job in status '{job.status}'"}, status=409
@@ -250,14 +352,14 @@ def job_events(request, job_id):
     тик, поэтому во время выполнения стрим естественно шлёт кадр раз в
     секунду — живой обратный отсчёт.
     """
-    _job_or_404(job_id)  # 404 сразу, до начала стрима
+    _job_or_404(request, job_id)  # validate before opening the stream
     terminal = {"completed", "partial", "failed", "paused"}
 
     def stream():
         last = None
         for _ in range(1800):  # предохранитель: ~30 мин, EventSource переподключится
             try:
-                job = TranslationJob.objects.get(pk=job_id)
+                job = TranslationJob.objects.get(pk=job_id, owner=_owner(request))
             except TranslationJob.DoesNotExist:
                 break
             eta = job.eta_seconds()
@@ -292,7 +394,7 @@ def jobs_events(request):
     def stream():
         last = None
         for _ in range(1800):  # предохранитель: ~30 мин
-            items = [j.as_list_dict() for j in TranslationJob.objects.all()[:100]]
+            items = [j.as_list_dict() for j in TranslationJob.objects.filter(owner=_owner(request))[:100]]
             payload = json.dumps({"jobs": items})
             if payload != last:
                 last = payload
@@ -307,7 +409,7 @@ def jobs_events(request):
 
 @require_GET
 def job_segments(request, job_id):
-    job = _job_or_404(job_id)
+    job = _job_or_404(request, job_id)
     only_flagged = request.GET.get("flagged") == "1"
     queryset = job.segments.all()
     if only_flagged:
@@ -325,7 +427,7 @@ def job_segments(request, job_id):
 @csrf_exempt
 @require_POST
 def segment_correct(request, job_id, order):
-    job = _job_or_404(job_id)
+    job = _job_or_404(request, job_id)
     # ИСПРАВЛЕНИЕ: Защита от ValueError, предотвращаем падение 500
     try:
         order_int = int(order)
@@ -342,6 +444,8 @@ def segment_correct(request, job_id, order):
         segment = services.save_correction(job, order_int, corrected)
     except SegmentRecord.DoesNotExist:
         raise Http404
+    except ValueError as exc:
+        return JsonResponse({"error": str(exc)}, status=400)
         
     return JsonResponse(segment.as_dict())
 
@@ -349,7 +453,7 @@ def segment_correct(request, job_id, order):
 @csrf_exempt
 @require_POST
 def job_rebuild(request, job_id):
-    job = _job_or_404(job_id)
+    job = _job_or_404(request, job_id)
     try:
         result = services.rebuild_outputs(job)
     except ValueError as exc:
@@ -359,7 +463,7 @@ def job_rebuild(request, job_id):
 
 @require_GET
 def job_download(request, job_id):
-    job = _job_or_404(job_id)
+    job = _job_or_404(request, job_id)
     fmt = request.GET.get("format", "md")
     path = (job.outputs or {}).get(fmt)
     if not path:
@@ -367,12 +471,15 @@ def job_download(request, job_id):
             {"error": f"format '{fmt}' not available", "have": list(job.outputs or {})},
             status=404,
         )
-    file_path = Path(path)
-    if not file_path.exists():
+    if fmt not in _CONTENT_TYPES:
+        return JsonResponse({"error": "unsupported format"}, status=400)
+    output_root = Path(settings.PDFTRANSL_OUTPUT_DIR).resolve()
+    file_path = Path(path).resolve()
+    if not file_path.is_relative_to(output_root) or not file_path.is_file():
         raise Http404
     return FileResponse(
         open(file_path, "rb"),
-        as_attachment=fmt not in ("html",),
+        as_attachment=True,
         filename=file_path.name,
         content_type=_CONTENT_TYPES.get(fmt, "application/octet-stream"),
     )
@@ -407,7 +514,7 @@ def providers(request):
 @csrf_exempt
 @require_http_methods(["GET", "POST", "DELETE"])
 def glossary(request):
-    config = _engine_config()
+    config = _engine_config(request)
     store = Glossary(config.db_path)
     if request.method == "GET":
         return JsonResponse({"terms": store.list_all()})
@@ -433,7 +540,7 @@ def glossary(request):
 
 @require_GET
 def tm_stats(request):
-    config = _engine_config()
+    config = _engine_config(request)
     tm = TranslationMemory(config.db_path, get_embedder(config))
     return JsonResponse(tm.stats())
 
@@ -444,6 +551,8 @@ def tm_stats(request):
 @csrf_exempt
 @require_http_methods(["GET", "PUT"])
 def server_settings(request):
+    if not getattr(request, "pdftransl_is_admin", False):
+        return JsonResponse({"error": "administrator token required"}, status=403)
     """Runtime defaults applied to every new job — editable from the web
     UI with no server restart. Per-job options still override these."""
     config_row = ServerConfig.load()
@@ -486,23 +595,7 @@ def server_settings(request):
         expected = _SETTING_TYPES[key]
         try:
             # ИСПРАВЛЕНИЕ: Строгая валидация типов (особенно bool) вместо затирания ошибок
-            if expected is bool:
-                if isinstance(value, bool):
-                    pass
-                elif str(value).lower() in ("1", "true", "yes", "on"):
-                    value = True
-                elif str(value).lower() in ("0", "false", "no", "off"):
-                    value = False
-                else:
-                    raise ValueError(f"must be a boolean, got {value}")
-            elif expected is int:
-                value = int(value)
-            elif expected is list:
-                if isinstance(value, str):
-                    value = [v.strip() for v in value.split(",") if v.strip()]
-                value = list(value)
-            else:
-                value = str(value)
+            value = _coerce_value(key, value, expected)
         except (TypeError, ValueError) as exc:
             errors[key] = str(exc)
             continue

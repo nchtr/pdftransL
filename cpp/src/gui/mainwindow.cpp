@@ -6,6 +6,7 @@
 #include "gui/joblistwidget.h"
 #include "gui/settingswidget.h"
 #include "gui/uploadwidget.h"
+#include "pipeline/desktop_pipeline.h"
 #include "rag/store.h"
 #include <QApplication>
 #include <QFileInfo>
@@ -14,6 +15,11 @@
 #include <QSplitter>
 #include <QStatusBar>
 #include <QTabWidget>
+#include <QThreadPool>
+#include <QFutureWatcher>
+#include <QMetaObject>
+#include <QPointer>
+#include <QtConcurrent>
 #include <QVBoxLayout>
 #include <QWidget>
 
@@ -21,6 +27,9 @@ namespace pdftransl {
 
 MainWindow::MainWindow(const PipelineConfig& config, QWidget* parent)
     : QMainWindow(parent), m_config(config) {
+    // Jobs contain heavyweight parsers and models; an unbounded global Qt
+    // pool can easily launch several of them at once and exhaust RAM/VRAM.
+    QThreadPool::globalInstance()->setMaxThreadCount(qBound(1, m_config.maxWorkers, 2));
     applyDarkPalette();
     setupUi();
 
@@ -114,9 +123,73 @@ void MainWindow::handleJobSubmitted(const QString& pdfPath, const PipelineConfig
     job.sourceLang = config.sourceLang;
     job.targetLang = config.targetLang;
     job.status = QStringLiteral("queued");
-
     m_jobList->addJob(job);
     m_jobDetail->showJob(job);
+    m_queuedJobs.insert(job.jobId, {pdfPath, config,
+                                    QSharedPointer<std::atomic_bool>::create(false)});
+    startJob(job.jobId);
+}
+
+void MainWindow::startJob(const QString& jobId) {
+    auto it = m_queuedJobs.find(jobId);
+    if (it == m_queuedJobs.end() || m_runningJobs.contains(jobId)) return;
+    it->pauseRequested->store(false);
+
+    JobInfo job = m_jobList->jobInfo(jobId);
+    job.status = QStringLiteral("running");
+    job.stage = QStringLiteral("parse");
+    job.progress = 0.0;
+    job.error.clear();
+    m_jobList->updateJob(job);
+    m_jobDetail->showJob(job);
+
+    const QueuedJob queued = it.value();
+    auto* watcher = new QFutureWatcher<JobResult>(this);
+    m_runningJobs.insert(jobId, watcher);
+    connect(watcher, &QFutureWatcher<JobResult>::finished, this, [this, watcher, jobId] {
+        const JobResult result = watcher->result();
+        m_runningJobs.remove(jobId);
+        watcher->deleteLater();
+        JobInfo finished = m_jobList->jobInfo(jobId);
+        finished.status = result.status;
+        finished.stage = result.status == QStringLiteral("failed") ? finished.stage : QStringLiteral("export");
+        if (result.status == QStringLiteral("completed") || result.status == QStringLiteral("partial"))
+            finished.progress = 1.0;
+        finished.error = result.error;
+        m_jobList->updateJob(finished);
+        m_jobDetail->showJob(finished);
+
+        QMap<QString, QString> downloads;
+        if (!result.outputMarkdownPath.isEmpty()) downloads.insert("md", result.outputMarkdownPath);
+        for (auto exportIt = result.exports.constBegin(); exportIt != result.exports.constEnd(); ++exportIt) {
+            if (exportIt.value().isValid()) downloads.insert(exportIt.key(), exportIt.value().toString());
+        }
+        m_jobDetail->setDownloads(downloads);
+        if (result.status != QStringLiteral("paused")) m_queuedJobs.remove(jobId);
+    });
+
+    QPointer<MainWindow> owner(this);
+    watcher->setFuture(QtConcurrent::run([owner, queued, jobId] {
+        DesktopPipeline pipeline(queued.config);
+        return pipeline.run(
+            queued.pdfPath, jobId,
+            [owner, jobId](const QString& stage, double progress) {
+                if (!owner) return;
+                QMetaObject::invokeMethod(owner.data(), [owner, jobId, stage, progress] {
+                    if (owner) owner->updateJobProgress(jobId, stage, progress);
+                }, Qt::QueuedConnection);
+            },
+            [pause = queued.pauseRequested] { return pause->load(); });
+    }));
+}
+
+void MainWindow::updateJobProgress(const QString& jobId, const QString& stage, double progress) {
+    if (!m_runningJobs.contains(jobId)) return;
+    JobInfo job = m_jobList->jobInfo(jobId);
+    job.stage = stage;
+    job.progress = progress;
+    m_jobList->updateJob(job);
+    if (m_jobDetail->isVisible()) m_jobDetail->showJob(job);
 }
 
 void MainWindow::handleJobSelected(const QString& jobId) {
@@ -124,17 +197,12 @@ void MainWindow::handleJobSelected(const QString& jobId) {
 }
 
 void MainWindow::handlePauseRequested(const QString& jobId) {
-    JobInfo job = m_jobList->jobInfo(jobId);
-    job.status = QStringLiteral("paused");
-    m_jobList->updateJob(job);
-    m_jobDetail->showJob(job);
+    auto it = m_queuedJobs.find(jobId);
+    if (it != m_queuedJobs.end()) it->pauseRequested->store(true);
 }
 
 void MainWindow::handleResumeRequested(const QString& jobId) {
-    JobInfo job = m_jobList->jobInfo(jobId);
-    job.status = QStringLiteral("running");
-    m_jobList->updateJob(job);
-    m_jobDetail->showJob(job);
+    startJob(jobId);
 }
 
 } // namespace pdftransl

@@ -53,6 +53,27 @@ StageCb = Callable[[str, float], None]  # (stage_name, progress 0..1)
 _OCR_BACKENDS = {"mineru_local", "mineru_api", "vlm_ocr"}
 
 
+def _atomic_write_text(path: Path, text: str) -> None:
+    """Publish a completed text artifact atomically in its target directory."""
+    import os
+    import tempfile
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(temporary, path)
+    except Exception:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise
+
+
 def _is_garbage_markdown(md_text: str) -> bool:
     """Не выдал ли парсер откровенный мусор (кракозябры/заполнители).
 
@@ -157,9 +178,15 @@ class TranslationPipeline:
         back-translation, export...) contribute nothing to the bar,
         instead of a one-size-fits-all fixed split.
         """
+        supplied_job_id = job_id
         job_id = job_id or new_id("job_")
         pdf_path = Path(pdf_path)
-        out_dir = Path(output_dir or self.config.output_dir) / pdf_path.stem
+        # Service/API jobs have a stable unique id; keeping it in the output
+        # directory prevents two uploads named ``article.pdf`` from sharing
+        # checkpoints and overwriting each other's exports.  Direct CLI runs
+        # deliberately retain the historical stem-only directory for resume.
+        out_name = f"{pdf_path.stem}_{job_id}" if supplied_job_id else pdf_path.stem
+        out_dir = Path(output_dir or self.config.output_dir) / out_name
         out_dir.mkdir(parents=True, exist_ok=True)
         started = time.time()
 
@@ -354,7 +381,11 @@ class TranslationPipeline:
             attempts += fbs
 
         cache = (
-            ParseCache(self.config.output_dir) if self.config.parse_cache else None
+            ParseCache(
+                self.config.output_dir,
+                namespace=(f"v2_ocr{self.config.ocr_dpi}_"
+                           f"{int(self.config.ocr_on_scan)}"),
+            ) if self.config.parse_cache else None
         )
         tried: set[str] = set()
         errors: list[str] = []
@@ -741,12 +772,12 @@ class TranslationPipeline:
                                 job_id, exc)
                 stage_errors["layout_fix"] = str(exc)
 
-        output_path.write_text(translated_md, encoding="utf-8")
+        _atomic_write_text(output_path, translated_md)
         bilingual_path: Optional[Path] = None
         if cfg.bilingual:
             bilingual_md = assemble(_bilingual_texts(segments))
             bilingual_path = output_path.with_suffix(".bilingual.md")
-            bilingual_path.write_text(bilingual_md, encoding="utf-8")
+            _atomic_write_text(bilingual_path, bilingual_md)
 
         # 8. export assets next to the translated markdown
         assets_dir: Optional[Path] = None

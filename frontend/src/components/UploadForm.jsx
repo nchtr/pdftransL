@@ -80,6 +80,10 @@ export default function UploadForm({ meta, onSubmitted, onError }) {
   const submit = async (e) => {
     e.preventDefault()
     if (!file) return
+    if (sourceLang === targetLang) {
+      onError('Язык оригинала и язык перевода должны отличаться')
+      return
+    }
     setBusy(true)
     try {
       const form = new FormData()

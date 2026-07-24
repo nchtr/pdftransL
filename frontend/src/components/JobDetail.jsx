@@ -34,43 +34,8 @@ export default function JobDetail({ jobId, onClose, onError }) {
 
   useEffect(() => {
     if (!job || (job.status !== 'running' && job.status !== 'queued')) return undefined
-    if (typeof EventSource === 'undefined') {
-      const timer = setInterval(refresh, 2000)
-      return () => clearInterval(timer)
-    }
-    let source = null
-    let reconnectTimer = null
-    let attempt = 0
-    let stopped = false
-
-    function connect() {
-      if (stopped) return
-      source = new EventSource(`/api/jobs/${jobId}/events/`)
-      source.onmessage = (event) => {
-        attempt = 0
-        const data = JSON.parse(event.data)
-        setJob((prev) => (prev ? { ...prev, ...data } : prev))
-        if (['completed', 'partial', 'failed', 'paused'].includes(data.status)) {
-          source.close()
-          source = null
-          refresh()
-        }
-      }
-      source.onerror = () => {
-        source.close()
-        source = null
-        attempt = Math.min(attempt + 1, 5)
-        const delay = Math.min(1000 * Math.pow(2, attempt), 30000)
-        reconnectTimer = setTimeout(connect, delay)
-      }
-    }
-    connect()
-
-    return () => {
-      stopped = true
-      if (source) source.close()
-      if (reconnectTimer) clearTimeout(reconnectTimer)
-    }
+    const timer = setInterval(refresh, 2000)
+    return () => clearInterval(timer)
   }, [job?.status, jobId, refresh])
 
   const rebuild = async () => {
@@ -106,6 +71,22 @@ export default function JobDetail({ jobId, onClose, onError }) {
       onError(e.message)
     } finally {
       setResuming(false)
+    }
+  }
+
+  const download = async (format) => {
+    try {
+      const { blob, filename } = await api.download(jobId, format)
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = filename
+      document.body.appendChild(link)
+      link.click()
+      link.remove()
+      URL.revokeObjectURL(url)
+    } catch (e) {
+      onError(e.message)
     }
   }
 
@@ -215,15 +196,13 @@ export default function JobDetail({ jobId, onClose, onError }) {
       {job.formats?.length > 0 && (
         <div className="downloads">
           {job.formats.map((fmt) => (
-            <a
+            <button
               key={fmt}
               className="download-btn"
-              href={api.downloadUrl(job.id, fmt)}
-              target={fmt === 'html' ? '_blank' : undefined}
-              rel="noreferrer"
+              onClick={() => download(fmt)}
             >
               {FORMAT_TITLES[fmt] || fmt}
-            </a>
+            </button>
           ))}
         </div>
       )}

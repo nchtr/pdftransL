@@ -111,7 +111,9 @@ cd backend && python manage.py runserver   # → http://localhost:8000
 
 В дев-режиме задачи крутятся в фоновых потоках — брокер не нужен. Для
 продакшена: `USE_CELERY=1`, redis, `celery -A config worker`. Открываете
-API наружу — задайте `PDFTRANSL_API_TOKEN` (Bearer-токен) и помните про
+API наружу требует `PDFTRANSL_API_TOKEN` (Bearer-токен) и явный
+`DJANGO_ALLOWED_HOSTS`. Откройте UI один раз как `/#token=<токен>`: токен
+сохранится только в `localStorage` и будет убран из адресной строки. Также помните про
 лимит загрузок `PDFTRANSL_UPLOADS_PER_HOUR`.
 
 Хотите видеть всё, что делает сервер, — `PDFTRANSL_LOG_LEVEL=DEBUG`:

@@ -6,6 +6,7 @@
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QThread>
+#include <QTimer>
 #include <QRandomGenerator>
 #include <algorithm>
 #include <cmath>
@@ -56,19 +57,26 @@ QString OpenAIClient::chat(const std::vector<Message>& messages,
 
         QEventLoop loop;
         auto* reply = m_nam.post(req, QJsonDocument(payload).toJson(QJsonDocument::Compact));
+        QTimer timer;
+        timer.setSingleShot(true);
+        QObject::connect(&timer, &QTimer::timeout, reply, &QNetworkReply::abort);
         QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+        timer.start(static_cast<int>(m_config.timeout * 1000));
         loop.exec();
+        timer.stop();
 
         int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
         QByteArray body = reply->readAll();
+        const auto networkError = reply->error();
+        const QString networkErrorText = reply->errorString();
+        const QByteArray retryHeader = reply->rawHeader("Retry-After");
         reply->deleteLater();
 
-        if (reply->error() != QNetworkReply::NoError && status == 0) {
-            lastError = "network error: " + reply->errorString();
+        if (networkError != QNetworkReply::NoError && status == 0) {
+            lastError = "network error: " + networkErrorText;
             continue;
         }
         if (RETRIABLE.contains(status)) {
-            auto retryHeader = reply->rawHeader("Retry-After");
             m_retryAfter = retryHeader.isEmpty() ? std::nullopt
                            : std::optional<double>(retryHeader.toDouble());
             if (status == 429 && m_cooldownGate) m_cooldownGate->trip(m_retryAfter);

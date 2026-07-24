@@ -67,6 +67,7 @@ class AnthropicClient(BaseLLMClient):
         }
         self._headers.update(config.extra_headers)
         self._session = _make_session()
+        self._retry_after: Optional[float] = None
 
     def chat(
         self,
@@ -139,9 +140,6 @@ class AnthropicClient(BaseLLMClient):
                 continue
             return text
         raise LLMError(f"anthropic: retries exhausted ({last_error})")
-
-    _retry_after: Optional[float] = None
-
 
 def _header_retry_after(resp: requests.Response) -> Optional[float]:
     value = resp.headers.get("retry-after") or resp.headers.get("Retry-After")

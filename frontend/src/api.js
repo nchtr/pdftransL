@@ -2,14 +2,42 @@
 // Все пути бэкенда собраны здесь, компоненты работают только через api.*
 const BASE = ''
 
+const TOKEN_STORAGE_KEY = 'pdftransl.apiToken'
+
+function initialToken() {
+  if (typeof window === 'undefined') return ''
+  const fragment = new URLSearchParams(window.location.hash.slice(1))
+  const supplied = fragment.get('token')
+  if (supplied) {
+    window.sessionStorage.setItem(TOKEN_STORAGE_KEY, supplied)
+    // Do not leave a credential in the address bar or browser history.
+    window.history.replaceState(null, '', window.location.pathname + window.location.search)
+  }
+  return window.sessionStorage.getItem(TOKEN_STORAGE_KEY) || ''
+}
+
+let apiToken = initialToken()
+
+function authHeaders(headers = {}) {
+  return apiToken ? { ...headers, Authorization: `Bearer ${apiToken}` } : headers
+}
+
 async function json(url, options) {
-  const res = await fetch(BASE + url, options)
+  const res = await fetch(BASE + url, {
+    ...options,
+    headers: authHeaders(options?.headers),
+  })
   const body = await res.json().catch(() => ({}))
   if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`)
   return body
 }
 
 export const api = {
+  setToken: (token) => {
+    apiToken = token.trim()
+    if (apiToken) window.sessionStorage.setItem(TOKEN_STORAGE_KEY, apiToken)
+    else window.sessionStorage.removeItem(TOKEN_STORAGE_KEY)
+  },
   providers: () => json('/api/providers/'),
   jobs: () => json('/api/jobs/'),
   job: (id) => json(`/api/jobs/${id}/`),
@@ -56,5 +84,16 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(data),
     }),
-  downloadUrl: (id, format) => `${BASE}/api/jobs/${id}/download/?format=${format}`,
+  download: (id, format) => download(`/api/jobs/${id}/download/?format=${format}`),
+}
+
+async function download(url) {
+  const res = await fetch(BASE + url, { headers: authHeaders() })
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw new Error(body.error || `HTTP ${res.status}`)
+  }
+  const disposition = res.headers.get('Content-Disposition') || ''
+  const filename = /filename="?([^";]+)"?/i.exec(disposition)?.[1] || 'download'
+  return { blob: await res.blob(), filename }
 }

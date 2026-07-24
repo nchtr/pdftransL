@@ -14,6 +14,7 @@ import asyncio
 import logging
 import os
 import tempfile
+import time
 from pathlib import Path
 
 from aiogram import Bot, Dispatcher, F, Router
@@ -32,6 +33,14 @@ logger = logging.getLogger(__name__)
 
 DATA_DIR = Path(os.environ.get("PDFTRANSL_DATA_DIR", "data"))
 MAX_FILE_MB = 20  # Telegram Bot API download limit
+MAX_OUTPUT_MB = int(os.environ.get("PDFTRANSL_BOT_MAX_OUTPUT_MB", "45"))
+MAX_CONCURRENT_JOBS = int(os.environ.get("PDFTRANSL_BOT_MAX_CONCURRENT_JOBS", "2"))
+_ALLOWED_CHAT_IDS = {
+    int(value) for value in os.environ.get("PDFTRANSL_BOT_ALLOWED_CHAT_IDS", "").split(",")
+    if value.strip().lstrip("-").isdigit()
+}
+_ALLOW_PUBLIC = os.environ.get("PDFTRANSL_BOT_ALLOW_PUBLIC", "0").lower() in ("1", "true", "yes")
+_job_slots = asyncio.Semaphore(MAX_CONCURRENT_JOBS)
 
 router = Router()
 store = SettingsStore(DATA_DIR / "bot_settings.json")
@@ -49,15 +58,16 @@ HELP = (
 )
 
 
-def _pipeline_config(settings: ChatSettings) -> PipelineConfig:
+def _pipeline_config(settings: ChatSettings, chat_id: int) -> PipelineConfig:
+    chat_dir = DATA_DIR / "bot" / str(chat_id)
     overrides: dict = {
         "source_lang": settings.source_lang,
         "target_lang": settings.target_lang,
         "review": settings.review,
         "bilingual": settings.bilingual,
         "export_formats": settings.formats,
-        "db_path": str(DATA_DIR / "pdftransl.db"),
-        "output_dir": str(DATA_DIR / "output"),
+        "db_path": str(chat_dir / "pdftransl.db"),
+        "output_dir": str(chat_dir / "output"),
     }
     if settings.provider:
         overrides["provider"] = settings.provider
@@ -155,8 +165,11 @@ async def on_setting(callback: CallbackQuery) -> None:
 
 @router.message(F.document)
 async def on_document(message: Message, bot: Bot) -> None:
+    if not _ALLOW_PUBLIC and message.chat.id not in _ALLOWED_CHAT_IDS:
+        await message.reply("Bot is available only to allowed chats.")
+        return
     document = message.document
-    name = document.file_name or "document.pdf"
+    name = Path(document.file_name or "document.pdf").name
     if not name.lower().endswith(".pdf"):
         await message.reply("Пришлите файл в формате PDF.")
         return
@@ -170,14 +183,23 @@ async def on_document(message: Message, bot: Bot) -> None:
     with tempfile.TemporaryDirectory(prefix="pdftransl_bot_") as tmp:
         pdf_path = Path(tmp) / name
         await bot.download(document, destination=pdf_path)
+        try:
+            if pdf_path.read_bytes()[:5] != b"%PDF-":
+                await _safe_edit(status, "Invalid PDF signature.")
+                return
+        except OSError:
+            await _safe_edit(status, "Could not read uploaded file.")
+            return
 
         loop = asyncio.get_running_loop()
-        last: dict = {"text": ""}
+        last: dict = {"text": "", "at": 0.0}
 
         def on_stage(stage: str, progress: float) -> None:
             text = f"⚙️ {stage} — {progress:.0%}"
-            if text != last["text"]:
+            now = time.monotonic()
+            if text != last["text"] and now - last["at"] >= 1.0:
                 last["text"] = text
+                last["at"] = now
                 asyncio.run_coroutine_threadsafe(
                     _safe_edit(status, text), loop
                 )
@@ -186,12 +208,13 @@ async def on_document(message: Message, bot: Bot) -> None:
             # service.process (not pipeline.run directly) keeps the shared
             # job repository honest: status/progress get persisted, so
             # `pdftransl jobs` doesn't show bot jobs stuck as "queued".
-            service = TranslationService(_pipeline_config(settings))
+            service = TranslationService(_pipeline_config(settings, message.chat.id))
             job_id = service.submit(str(pdf_path))
             return service.process(job_id, on_stage=on_stage)
 
         try:
-            result = await asyncio.to_thread(run)
+            async with _job_slots:
+                result = await asyncio.to_thread(run)
         except Exception as exc:  # noqa: BLE001 - report any failure to the user
             logger.exception("Bot translation failed")
             await _safe_edit(status, f"❌ Ошибка: {exc}")
@@ -221,6 +244,9 @@ async def on_document(message: Message, bot: Bot) -> None:
 
         for path in outputs:
             if path.exists():
+                if path.stat().st_size > MAX_OUTPUT_MB * 1024 * 1024:
+                    await message.answer(f"{path.name} is larger than {MAX_OUTPUT_MB} MB.")
+                    continue
                 await message.answer_document(FSInputFile(path))
         missing = [
             f"{fmt}: {reason}"

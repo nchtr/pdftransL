@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 import threading
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -44,8 +46,17 @@ class SettingsStore:
                 setattr(settings, key, value)
             self._data[str(chat_id)] = asdict(settings)
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            self.path.write_text(
-                json.dumps(self._data, ensure_ascii=False, indent=1),
-                encoding="utf-8",
-            )
+            fd, temporary = tempfile.mkstemp(prefix=f".{self.path.name}.", dir=self.path.parent)
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                    json.dump(self._data, fh, ensure_ascii=False, indent=1)
+                    fh.flush()
+                    os.fsync(fh.fileno())
+                os.replace(temporary, self.path)
+            except Exception:
+                try:
+                    os.unlink(temporary)
+                except OSError:
+                    pass
+                raise
         return settings

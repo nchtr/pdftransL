@@ -48,6 +48,7 @@ class TranslationJob(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     pdf = models.FileField(upload_to="input/%Y/%m/")
     original_name = models.CharField(max_length=255, blank=True, default="")
+    owner = models.CharField(max_length=96, default="default", db_index=True)
 
     source_lang = models.CharField(max_length=8, default="en")
     target_lang = models.CharField(max_length=8, default="ru")

@@ -1,10 +1,7 @@
 #include "translation/translator.h"
 #include "quality/validators.h"
 #include "translation/prompts.h"
-#include <QFutureSynchronizer>
 #include <QMutexLocker>
-#include <QThreadPool>
-#include <QtConcurrent>
 #include <algorithm>
 
 namespace pdftransl {
@@ -110,6 +107,7 @@ Segment Translator::translateOne(Segment segment, const QString& sourceContext) 
 
     QString raw;
     try {
+        QMutexLocker lock(&m_clientMutex);
         raw = m_client->chat({Message{"system", system}, Message{"user", user}}, m_config.temperature);
     } catch (const std::exception& exc) {
         segment.ok = false;
@@ -128,6 +126,7 @@ Segment Translator::translateOne(Segment segment, const QString& sourceContext) 
         const QString repairUser = REPAIR_USER.arg(issuesToText(segment.issues), masked.text, raw);
         QString newRaw;
         try {
+            QMutexLocker lock(&m_clientMutex);
             newRaw = m_client->chat({Message{"system", system}, Message{"user", repairUser}},
                                      m_config.temperature);
         } catch (const std::exception& exc) {
@@ -194,11 +193,6 @@ std::vector<Segment> Translator::translateSegments(
     if (total == 0) return result;
 
     const int batchSize = m_config.translateBatchSize > 0 ? m_config.translateBatchSize : total;
-    const int workers = std::max(1, m_config.maxWorkers);
-
-    QThreadPool pool;
-    pool.setMaxThreadCount(workers);
-
     bool paused = false;
     for (size_t start = 0; start < toTranslate.size(); start += static_cast<size_t>(batchSize)) {
         // Пауза, пришедшая между партиями, замечается ДО отправки новых
@@ -212,15 +206,16 @@ std::vector<Segment> Translator::translateSegments(
         }
 
         const size_t end = std::min(start + static_cast<size_t>(batchSize), toTranslate.size());
-        QFutureSynchronizer<void> sync;
+        // Concrete Qt network clients own a QNetworkAccessManager, which is
+        // thread-affine.  Calling that one shared client from a worker pool is
+        // invalid even if a mutex serializes calls, because the caller is
+        // still the wrong thread.  Keep transport on the Translator's owning
+        // thread until clients are redesigned as one-per-worker objects.
         for (size_t k = start; k < end; ++k) {
             const int idx = toTranslate[k];
             const QString ctx = contextByIndex.value(idx);
-            sync.addFuture(QtConcurrent::run(&pool, [this, &result, idx, ctx] {
-                result[idx] = translateOne(std::move(result[idx]), ctx);
-            }));
+            result[idx] = translateOne(std::move(result[idx]), ctx);
         }
-        sync.waitForFinished();
 
         for (size_t k = start; k < end; ++k) {
             const int idx = toTranslate[k];

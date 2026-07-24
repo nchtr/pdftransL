@@ -4,6 +4,9 @@
 // применяется через QPalette.
 #include "core/config.h"
 #include <QMainWindow>
+#include <QHash>
+#include <QSharedPointer>
+#include <atomic>
 #include <memory>
 
 class QTabWidget;
@@ -17,6 +20,8 @@ class JobDetailWidget;
 class SettingsWidget;
 class GlossaryWidget;
 class TranslationMemory;
+template <typename T> class QFutureWatcher;
+struct JobResult;
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -35,6 +40,8 @@ private:
     void setupUi();
     void applyDarkPalette();
     void refreshTmStats();
+    void startJob(const QString& jobId);
+    void updateJobProgress(const QString& jobId, const QString& stage, double progress);
 
     PipelineConfig m_config;
 
@@ -47,6 +54,14 @@ private:
 
     std::unique_ptr<TranslationMemory> m_translationMemory;
     QLabel* m_tmStatsLabel;
+
+    struct QueuedJob {
+        QString pdfPath;
+        PipelineConfig config;
+        QSharedPointer<std::atomic_bool> pauseRequested;
+    };
+    QHash<QString, QueuedJob> m_queuedJobs;
+    QHash<QString, QFutureWatcher<JobResult>*> m_runningJobs;
 };
 
 } // namespace pdftransl

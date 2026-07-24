@@ -1,11 +1,14 @@
 """Мини-middleware без зависимостей: CORS и опциональный Bearer-токен.
 
 Токен (PDFTRANSL_API_TOKEN) закрывает весь /api/; принимается и
-?token= — EventSource не умеет ставить заголовки.
+?token= для ссылок на скачивание, где нельзя поставить Authorization-заголовок.
 """
+
+import secrets
 
 from django.conf import settings
 from django.http import HttpResponse, JsonResponse
+from django.utils.cache import patch_vary_headers
 
 
 def cors_middleware(get_response):
@@ -23,6 +26,7 @@ def cors_middleware(get_response):
             response["Access-Control-Allow-Headers"] = (
                 "Content-Type, X-Requested-With, Authorization"
             )
+            patch_vary_headers(response, ("Origin",))
         return response
 
     return middleware
@@ -37,17 +41,35 @@ def token_auth_middleware(get_response):
     """
 
     def middleware(request):
-        token = settings.PDFTRANSL_API_TOKEN
-        if token and request.path.startswith("/api/"):
+        tokens: dict[str, str] = {}
+        raw = getattr(settings, "PDFTRANSL_API_TOKENS", "")
+        for entry in raw.split(","):
+            owner, separator, token = entry.strip().partition(":")
+            if separator and owner and token:
+                tokens[owner] = token
+        if not tokens and settings.PDFTRANSL_API_TOKEN:
+            tokens["default"] = settings.PDFTRANSL_API_TOKEN
+        if request.method == "OPTIONS":
+            return get_response(request)
+        if tokens and request.path.startswith("/api/"):
             supplied = ""
             auth = request.headers.get("Authorization", "")
             if auth.startswith("Bearer "):
                 supplied = auth[7:]
-            supplied = supplied or request.GET.get("token", "")
-            if supplied != token:
+            owner = next(
+                (name for name, token in tokens.items()
+                 if secrets.compare_digest(supplied, token)),
+                None,
+            )
+            if owner is None:
                 return JsonResponse(
                     {"error": "invalid or missing API token"}, status=401
                 )
+            request.pdftransl_owner = owner
+            request.pdftransl_is_admin = owner in settings.PDFTRANSL_ADMIN_OWNERS
+        else:
+            request.pdftransl_owner = "local"
+            request.pdftransl_is_admin = True
         return get_response(request)
 
     return middleware

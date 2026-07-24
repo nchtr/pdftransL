@@ -152,8 +152,11 @@ class TranslationMemory:
                 )
 
     def _connect(self):
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, timeout=30)
         conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA busy_timeout=30000")
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
         return _closing_conn(conn)
 
     # -- writing (learning) -------------------------------------------
@@ -176,6 +179,15 @@ class TranslationMemory:
         with self._lock, self._connect() as conn:
             # human corrections replace earlier auto entries for the same source
             if origin == "human":
+                conn.execute(
+                    "DELETE FROM tm_segments WHERE source_hash=? AND src_lang=? "
+                    "AND tgt_lang=? AND origin='auto'",
+                    (_hash(source), src_lang, tgt_lang),
+                )
+            else:
+                # Reprocessing the same document used to append an identical
+                # automatic memory row on every run. Keep only the newest
+                # auto candidate for this exact source/language pair.
                 conn.execute(
                     "DELETE FROM tm_segments WHERE source_hash=? AND src_lang=? "
                     "AND tgt_lang=? AND origin='auto'",

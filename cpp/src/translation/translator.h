@@ -69,6 +69,10 @@ private:
     // восстановленный из плейсхолдеров) перевод.
     QMutex m_cacheMutex;
     QHash<QString, QString> m_runCache;
+    // QNetworkAccessManager (inside the concrete clients) is thread-affine.
+    // Segments may be prepared in parallel, but network requests through one
+    // shared client must be serialized.
+    QMutex m_clientMutex;
 };
 
 } // namespace pdftransl
